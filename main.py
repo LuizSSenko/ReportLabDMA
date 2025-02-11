@@ -3,29 +3,60 @@ import os
 import json
 import re
 import logging
+import hashlib
 from pathlib import Path
 from datetime import datetime
+from typing import Tuple, Optional, List, Dict, Callable, Any
 from shapely.geometry import Point, shape
 from PIL import Image, ImageOps
 from io import BytesIO
 import base64
 
-# Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler("main.log"),
-        logging.StreamHandler()
-    ]
-)
+# Configuração do logger para este módulo
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# Desabilita a propagação para evitar que os logs sejam também tratados pelo logger pai
+logger.propagate = False
+
+if not logger.hasHandlers():
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+    file_handler = logging.FileHandler("main.log")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
 
 # Constantes
-IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic"]
+IMAGE_EXTENSIONS: List[str] = [".jpg", ".jpeg", ".png", ".heic"]
 
-# =============================================================================
-# Funções Auxiliares
-# =============================================================================
+def load_config() -> dict:
+    """
+    Carrega o arquivo JSON de configuração com os textos para o HTML e PDF.
+    Se ocorrer algum erro, retorna um dicionário com valores padrão.
+    """
+    config_path = Path(__file__).parent / "pdf_config.json"
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+        logger.info(f"Configuração carregada com sucesso de {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Erro ao carregar a configuração: {e}", exc_info=True)
+        # Valores padrão caso o arquivo não seja encontrado ou ocorra erro
+        return {
+            "header_1": "DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE",
+            "header_2": "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS",
+            "title": "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC",
+            "date_prefix": "DATA DO RELATÓRIO:",
+            "reference_number": "CONTRATO Nº: Contrato Exemplo",
+            "description": "Vistoria de campo realizada pelos técnicos da DAV/DMA,",
+            "address": "Rua 5 de Junho, 251 - Cidade Universitária Zeferino Vaz - Campinas - SP",
+            "postal_code": "CEP: 13083-877",
+            "contact_phone": "Tel: (19) 3521-7010",
+            "contact_fax": "Fax: (19) 3521-7835",
+            "contact_email": "mascerct@unicamp.br"
+        }
 
 def sanitize_sigla(sigla: str) -> str:
     """
@@ -36,7 +67,7 @@ def sanitize_sigla(sigla: str) -> str:
         sigla = sigla.replace(c, '-')
     return sigla
 
-def load_geojson():
+def load_geojson() -> Dict[str, Any]:
     """
     Carrega o arquivo GeoJSON contendo as informações de quadras.
     """
@@ -46,32 +77,33 @@ def load_geojson():
             data = json.load(file)
         return data
     except Exception as e:
-        logging.critical(f"Falha ao carregar GeoJSON: {e}")
+        logger.critical(f"Falha ao carregar GeoJSON: {e}", exc_info=True)
         raise
 
-def get_exif_and_image(image_file: Path):
+def get_exif_and_image(image_file: Path) -> Tuple[Dict[Any, Any], Optional[Image.Image]]:
     """
     Abre a imagem, extrai os metadados EXIF e corrige a orientação.
     """
     try:
         with Image.open(image_file) as img:
             exif_data = img._getexif() or {}
+            # Corrige a orientação utilizando os metadados EXIF
             img_corrected = ImageOps.exif_transpose(img)
-            return exif_data, img_corrected
+            return exif_data, img_corrected.copy()  # Usa copy para manter a imagem após o fechamento do contexto
     except Exception as e:
-        logging.error(f"Erro ao abrir {image_file}: {e}")
+        logger.error(f"Erro ao abrir {image_file}: {e}", exc_info=True)
         return {}, None
 
-def get_coordinates(gps_info):
+def get_coordinates(gps_info: Optional[Dict[Any, Any]]) -> Tuple[str, str]:
     """
-    Converte as informações de GPS do EXIF em coordenadas decimais.
+    Converte as informações de GPS do EXIF em coordenadas decimais e gera o link do Google Maps.
     """
     if not gps_info or not isinstance(gps_info, dict):
         return "Sem localização", "Sem localização"
 
-    def convert_to_degrees(value):
+    def convert_to_degrees(value: Any) -> Optional[float]:
         try:
-            def rational_to_float(rational):
+            def rational_to_float(rational: Any) -> float:
                 if isinstance(rational, tuple):
                     return float(rational[0]) / float(rational[1])
                 return float(rational)
@@ -80,7 +112,7 @@ def get_coordinates(gps_info):
             s = rational_to_float(value[2])
             return d + (m / 60.0) + (s / 3600.0)
         except Exception as e:
-            logging.error(f"Erro na conversão de coordenadas: {e}")
+            logger.error(f"Erro na conversão de coordenadas: {e}", exc_info=True)
             return None
 
     lat = convert_to_degrees(gps_info.get(2)) if 2 in gps_info else None
@@ -98,7 +130,7 @@ def get_coordinates(gps_info):
     coordinates_str = f"{lat}, {lon}"
     return coordinates_str, gmaps_link
 
-def extract_image_datetime(image_path: Path):
+def extract_image_datetime(image_path: Path) -> Optional[str]:
     """
     Extrai a data/hora da imagem utilizando os metadados EXIF ou a data de modificação do arquivo.
     """
@@ -111,16 +143,16 @@ def extract_image_datetime(image_path: Path):
                     dt = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
                     return dt.strftime("%Y-%m-%d_%H-%M-%S")
     except Exception as e:
-        logging.error(f"Erro ao extrair EXIF de {image_path}: {e}")
+        logger.error(f"Erro ao extrair EXIF de {image_path}: {e}", exc_info=True)
     try:
         timestamp = image_path.stat().st_mtime
         dt = datetime.fromtimestamp(timestamp)
         return dt.strftime("%Y-%m-%d_%H-%M-%S")
     except Exception as e:
-        logging.error(f"Erro ao obter data de modificação de {image_path}: {e}")
+        logger.error(f"Erro ao obter data de modificação de {image_path}: {e}", exc_info=True)
         return None
 
-def find_nearest_geometry(features, lat, lon):
+def find_nearest_geometry(features: List[Dict[str, Any]], lat: float, lon: float) -> Tuple[str, str, float]:
     """
     Encontra a feature mais próxima das coordenadas fornecidas.
     """
@@ -136,7 +168,7 @@ def find_nearest_geometry(features, lat, lon):
                 min_distance = distance
                 nearest_quad = feature.get('properties')
         except Exception as e:
-            logging.error(f"Erro ao processar feature: {e}")
+            logger.error(f"Erro ao processar feature: {e}", exc_info=True)
             continue
 
     if nearest_quad:
@@ -160,7 +192,11 @@ def generate_new_filename(index: int, sigla: str, ext: str) -> str:
     sigla_sanitizada = sanitize_sigla(sigla)
     return f"{index:03} - {sigla_sanitizada}{ext}"
 
-def generate_thumbnail_base64(img, max_size=(500, 500), fmt='JPEG'):
+def generate_thumbnail_base64(
+    img: Image.Image,
+    max_size: Tuple[int, int] = (500, 500),
+    fmt: str = 'JPEG'
+) -> Tuple[str, Tuple[int, int]]:
     """
     Gera uma miniatura da imagem e a converte para uma string Base64.
     """
@@ -172,14 +208,10 @@ def generate_thumbnail_base64(img, max_size=(500, 500), fmt='JPEG'):
         base64_thumb = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return base64_thumb, thumb.size
     except Exception as e:
-        logging.error(f"Erro ao gerar thumbnail: {e}")
+        logger.error(f"Erro ao gerar thumbnail: {e}", exc_info=True)
         return "", (0, 0)
 
-# =============================================================================
-# Funções Principais
-# =============================================================================
-
-def rename_images(directory: Path, selected_images=None):
+def rename_images(directory: Path, selected_images: Optional[List[str]] = None) -> List[str]:
     """
     Renomeia os arquivos de imagem no diretório utilizando informações do EXIF e GeoJSON.
     """
@@ -188,7 +220,7 @@ def rename_images(directory: Path, selected_images=None):
         image_files = sorted([directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS])
     else:
         image_files = sorted([f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS])
-    renamed_files = []
+    renamed_files: List[str] = []
     existing_friendly = [f for f in image_files if is_friendly_name(f.name)]
     existing_indices = []
     for f in existing_friendly:
@@ -199,10 +231,10 @@ def rename_images(directory: Path, selected_images=None):
     next_index = max_index + 1
 
     for image_file in image_files:
-        logging.info(f"Processando imagem: {image_file.name}...")
+        logger.info(f"Processando imagem: {image_file.name}...")
         try:
             if is_friendly_name(image_file.name):
-                logging.info(f" -> Já está no formato amigável: {image_file.name}")
+                logger.info(f" -> Já está no formato amigável: {image_file.name}")
                 renamed_files.append(image_file.name)
                 continue
             exif_data, img = get_exif_and_image(image_file)
@@ -215,7 +247,7 @@ def rename_images(directory: Path, selected_images=None):
                     lat, lon = map(float, coordinates.split(", "))
                     quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
                 except Exception as conv_err:
-                    logging.error(f"Erro ao converter coordenadas: {conv_err}")
+                    logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
                     quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
             else:
                 quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
@@ -225,62 +257,74 @@ def rename_images(directory: Path, selected_images=None):
             new_filename = generate_new_filename(next_index, sigla, ext)
             new_path = directory / new_filename
             while new_path.exists():
-                logging.warning(f" -> O arquivo {new_filename} já existe. Incrementando o índice.")
+                logger.warning(f" -> O arquivo {new_filename} já existe. Incrementando o índice.")
                 next_index += 1
                 new_filename = generate_new_filename(next_index, sigla, ext)
                 new_path = directory / new_filename
             try:
                 image_file.rename(new_path)
-                logging.info(f" -> Renomeado para {new_filename}")
+                logger.info(f" -> Renomeado para {new_filename}")
                 renamed_files.append(new_filename)
                 next_index += 1
             except OSError as os_err:
-                logging.error(f"Erro ao renomear {image_file.name}: {os_err}")
+                logger.error(f"Erro ao renomear {image_file.name}: {os_err}", exc_info=True)
         except Exception as e:
-            logging.error(f"Erro ao processar {image_file.name}: {e}")
+            logger.error(f"Erro ao processar {image_file.name}: {e}", exc_info=True)
     return renamed_files
 
-def process_images_with_progress(directory: Path, comments_dict=None, selected_images=None,
-                                 report_date="", fiscal_name="", contract_number="",
-                                 status_dict=None, progress_callback=None, disable_states=False):
+def process_images_with_progress(
+    directory: Path, 
+    comments_dict: Optional[Dict[str, str]] = None, 
+    selected_images: Optional[List[str]] = None,
+    report_date: str = "", 
+    fiscal_name: str = "", 
+    contract_number: str = "",
+    status_dict: Optional[Dict[str, str]] = None, 
+    progress_callback: Optional[Callable[[int, int], None]] = None, 
+    disable_states: bool = False
+) -> None:
     """
     Processa as imagens renomeadas e gera um relatório HTML incorporando miniaturas, data/hora, localização, status e comentários.
     """
     if status_dict is None:
         status_dict = {}
+    
+    # Carrega a configuração para os textos
+    config = load_config()
+    
     geojson_data = load_geojson()
     if selected_images is not None:
         image_files = sorted([directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS])
     else:
         image_files = sorted([f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS])
     if not image_files:
-        logging.warning("Nenhuma imagem selecionada para processar.")
+        logger.warning("Nenhuma imagem selecionada para processar.")
         return
     total = len(image_files)
-    logging.info(f"Encontradas {total} imagens para processar em: {directory}")
+    logger.info(f"Encontradas {total} imagens para processar em: {directory}")
     output_file = directory / "PYGeoDMA.html"
     try:
         with output_file.open("w", encoding="utf-8") as html_file:
             html_file.write("<html><head><meta charset='UTF-8'></head><body>")
-            header_line1 = ("DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE / PREFEITURA UNIVERSITÁRIA<br>"
-                            "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS")
+            # Utiliza os valores do JSON para os cabeçalhos
+            header_line1 = f"{config.get('header_1', '')}<br>{config.get('header_2', '')}"
             html_file.write(f"<p style='text-align: center; text-transform: uppercase; margin: 0;'>{header_line1}</p>")
-            header_line2 = "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC"
+            header_line2 = config.get("title", "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC")
             html_file.write(f"<p style='text-align: center; text-transform: uppercase; font-weight: bold; margin: 10px 0 20px 0;'>{header_line2}</p>")
             if report_date:
-                html_file.write(f"<p style='text-align: center; margin: 0;'>Data do Relatório: {report_date}</p>")
+                html_file.write(f"<p style='text-align: center; margin: 0;'>{config.get('date_prefix', 'DATA DO RELATÓRIO:')} {report_date}</p>")
             if contract_number:
-                html_file.write(f"<p style='text-align: center; margin: 0;'>Contrato No: {contract_number}</p>")
+                html_file.write(f"<p style='text-align: center; margin: 0;'>{config.get('reference_number', contract_number)}</p>")
             if fiscal_name:
                 html_file.write(f"<p><strong>Nome do Fiscal:</strong> {fiscal_name}</p>")
             html_file.write("<ul style='list-style-type: none; padding: 0;'>")
             for idx, image_file in enumerate(image_files, start=1):
                 if progress_callback:
                     progress_callback(idx, total)
-                logging.info(f"Processando imagem: {image_file.name}...")
+                logger.info(f"Processando imagem: {image_file.name}...")
                 try:
                     if not is_friendly_name(image_file.name):
-                        logging.warning(f" -> O nome '{image_file.name}' não está no formato amigável.")
+                        logger.warning(f" -> O nome '{image_file.name}' não está no formato amigável.")
                     exif_data, img = get_exif_and_image(image_file)
                     gps_info = exif_data.get(34853) if exif_data else None
                     coordinates, gmaps_link = get_coordinates(gps_info)
@@ -298,7 +342,7 @@ def process_images_with_progress(directory: Path, comments_dict=None, selected_i
                             lat, lon = map(float, coordinates.split(", "))
                             quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
                         except Exception as conv_err:
-                            logging.error(f"Erro ao converter coordenadas: {conv_err}")
+                            logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
                             quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
                     else:
                         quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
@@ -327,8 +371,7 @@ def process_images_with_progress(directory: Path, comments_dict=None, selected_i
                         html_file.write(f'<a href="{gmaps_link}" target="_blank">{gmaps_link}</a>')
                     else:
                         html_file.write("Sem localização")
-
-                    # Insere informações do status
+    
                     default_status = "Não Concluído"
                     status = status_dict.get(image_file.name, default_status) if status_dict is not None else default_status
                     if not disable_states:
@@ -339,27 +382,26 @@ def process_images_with_progress(directory: Path, comments_dict=None, selected_i
                         html_file.write(f"<p><strong>Comentário:</strong> {formatted_comment}</p>")
                     html_file.write("<div style='clear:both;'></div>")
                     html_file.write("</li>")
-                    logging.info(f" -> Processed {image_file.name}")
+                    logger.info(f" -> Processed {image_file.name}")
                 except Exception as e:
-                    logging.error(f"Erro ao processar {image_file.name}: {e}")
+                    logger.error(f"Erro ao processar {image_file.name}: {e}", exc_info=True)
             html_file.write("</ul></body></html>")
-            logging.info(f"Arquivo HTML gerado: {output_file}")
+            logger.info(f"Arquivo HTML gerado: {output_file}")
     except Exception as e:
-        logging.critical(f"Falha ao gerar HTML: {e}")
+        logger.critical(f"Falha ao gerar HTML: {e}", exc_info=True)
         raise
 
-# =============================================================================
-# Função de Coleta de Dados para Relatórios (HTML e PDF)
-# =============================================================================
-
-def collect_entries(directory: Path, comments_dict: dict, status_dict: dict = {}, disable_states=False, selected_images=None):
+def collect_entries(
+    directory: Path, 
+    comments_dict: Dict[str, str], 
+    status_dict: Dict[str, str] = {}, 
+    disable_states: bool = False, 
+    selected_images: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
     """
     Coleta os dados das imagens para geração de relatórios (HTML e PDF).
-
-    Se 'selected_images' for fornecido (lista de nomes de arquivos), somente esses arquivos serão processados.
     """
     if selected_images is not None:
-        # Usa os arquivos filtrados pela lista passada
         image_files = sorted([
             directory / f
             for f in selected_images
@@ -371,7 +413,7 @@ def collect_entries(directory: Path, comments_dict: dict, status_dict: dict = {}
             if f.suffix.lower() in IMAGE_EXTENSIONS
         ])
     
-    entries = []
+    entries: List[Dict[str, Any]] = []
     geojson_data = load_geojson()
     
     for idx, image_file in enumerate(image_files, start=1):
@@ -395,7 +437,7 @@ def collect_entries(directory: Path, comments_dict: dict, status_dict: dict = {}
                     lat, lon = map(float, coordinates.split(", "))
                     quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
                 except Exception as conv_err:
-                    logging.error(f"Erro ao converter coordenadas: {conv_err}")
+                    logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
                     quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
             else:
                 quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
@@ -428,15 +470,46 @@ def collect_entries(directory: Path, comments_dict: dict, status_dict: dict = {}
             entry = {'image': image_data, 'description': description, 'status': status}
             entries.append(entry)
         except Exception as e:
-            logging.error(f"Erro ao coletar dados para {image_file.name}: {e}")
+            logger.error(f"Erro ao coletar dados para {image_file.name}: {e}", exc_info=True)
             continue
     return entries
 
-# =============================================================================
-# Função Principal
-# =============================================================================
+def compute_image_hash(img: Image.Image, quality: int = 85) -> Optional[str]:
+    """
+    Calcula um hash MD5 da imagem após salvá-la num buffer com qualidade reduzida.
+    """
+    buffer = BytesIO()
+    try:
+        img.save(buffer, format="JPEG", quality=quality)
+    except Exception as e:
+        logger.error(f"Erro ao salvar imagem para computar hash: {e}", exc_info=True)
+        return None
+    data = buffer.getvalue()
+    return hashlib.md5(data).hexdigest()
 
-def main():
+def load_image_status_db(directory: Path) -> Dict[str, str]:
+    """
+    Carrega o arquivo JSON de banco de dados (imagens_db.json) e monta um dicionário
+    mapeando o nome do arquivo para o status salvo.
+    """
+    db_path = directory / "imagens_db.json"
+    status_dict = {}
+    if db_path.exists():
+        try:
+            with db_path.open("r", encoding="utf-8") as f:
+                db = json.load(f)
+            for file in directory.iterdir():
+                if file.suffix.lower() in IMAGE_EXTENSIONS:
+                    exif_data, img = get_exif_and_image(file)
+                    if img:
+                        image_hash = compute_image_hash(img)
+                        if image_hash and image_hash in db:
+                            status_dict[file.name] = db[image_hash].get("status", "Não Concluído")
+        except Exception as e:
+            logger.error(f"Erro ao carregar o banco de dados: {e}", exc_info=True)
+    return status_dict
+
+def main() -> None:
     """
     Função principal que realiza:
       - Renomeação das imagens,
@@ -445,31 +518,45 @@ def main():
     """
     directory = Path.cwd()
     
-    logging.info("Renomeando imagens...")
+    logger.info("Renomeando imagens...")
     renamed = rename_images(directory)
-    logging.info(f"Imagens renomeadas: {renamed}")
+    logger.info(f"Imagens renomeadas: {renamed}")
     
-    # Define dados do relatório (estes valores podem ser alterados conforme necessário)
+    # Carrega a configuração para obter os textos
+    config = load_config()
+    
+    # Define os dados do relatório
     report_date = datetime.now().strftime("%d/%m/%Y")
-    contract_number = "Contrato Exemplo"
+    contract_number = config.get("reference_number", "Contrato Exemplo")
     
-    # Gera o relatório HTML
-    logging.info("Gerando relatório HTML...")
-    # Para a versão de linha de comando, passamos dicionários vazios para comentários e status.
-    process_images_with_progress(directory, comments_dict={}, report_date=report_date, contract_number=contract_number, status_dict={})
+    # Carrega o dicionário de status a partir do banco de dados (imagens_db.json)
+    status_dict = load_image_status_db(directory)
+    
+    # Atualiza status_dict antes de gerar o HTML
+    status_dict = load_image_status_db(directory)
+
+    # Gera o relatório HTML com status atualizado
+    logger.info("Gerando relatório HTML...")
+    process_images_with_progress(
+        directory,
+        comments_dict={}, 
+        report_date=report_date, 
+        contract_number=contract_number, 
+        status_dict=status_dict  # Agora atualizado
+    )
     
     # Coleta os dados para o PDF
-    logging.info("Coletando dados para o PDF...")
-    entries = collect_entries(directory, {}, {})  # Dicionários vazios para comentários e status
+    logger.info("Coletando dados para o PDF...")
+    entries = collect_entries(directory, {}, status_dict)
     
     pdf_path = directory / "Relatorio.pdf"
-    from html_to_pdf import convert_data_to_pdf
-    logging.info(f"Criando PDF em: {pdf_path}")
+    from pdf_tools import convert_data_to_pdf  # Import local para evitar dependência cíclica
+    logger.info(f"Criando PDF em: {pdf_path}")
     try:
         convert_data_to_pdf(report_date, contract_number, entries, str(pdf_path), include_last_page=False)
-        logging.info("PDF criado com sucesso.")
+        logger.info("PDF criado com sucesso.")
     except Exception as e:
-        logging.error(f"Erro ao gerar PDF: {e}")
+        logger.error(f"Erro ao gerar PDF: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main()

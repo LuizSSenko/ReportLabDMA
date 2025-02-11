@@ -1,9 +1,11 @@
 # pdf_tools.py
 
 import os
+import json
 import base64
 import tempfile
 import logging
+from pathlib import Path
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
@@ -23,14 +25,44 @@ logging.basicConfig(
     ]
 )
 
-# Mapeamento de cores para os estados
-# Os valores RGB estão no intervalo de 0 a 1, sendo que (0, 0, 0) é preto e (1, 1, 1) é branco.
-# Sugestão de cores pastel:
+# Mapeamento de cores para os estados (não precisa ser alterado)
 STATUS_COLORS = {
     "Concluído": (0.90, 1.0, 0.90),      # verde claro
     "Parcial": (1.0, 1.0, 0.85),         # amarelo claro
     "Não Concluído": (1.0, 0.90, 0.90)    # vermelho claro
 }
+
+def load_pdf_config():
+    """
+    Carrega o arquivo de configuração JSON contendo os textos do PDF.
+    Caso o arquivo não seja encontrado, retorna um dicionário com valores padrão.
+    """
+    config_path = Path(__file__).parent / "pdf_config.json"
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+            logging.info(f"Arquivo de configuração '{config_path}' carregado com sucesso.")
+            return config
+        except Exception as e:
+            logging.error(f"Erro ao carregar o arquivo de configuração: {e}", exc_info=True)
+    else:
+        logging.warning(f"Arquivo de configuração '{config_path}' não encontrado. Usando valores padrão.")
+    
+    # Valores padrão (caso o JSON não exista ou ocorra algum erro)
+    return {
+        "header_1": "DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE",
+        "header_2": "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS",
+        "title": "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC",
+        "date_prefix": "DATA DO RELATÓRIO:",
+        "reference_number": "CONTRATO Nº: 039/2019 - PROVAC TERCEIRIZAÇÃO DE MÃO DE OBRA LTDA",
+        "description": "Vistoria de campo realizada pelos técnicos da DAV/DMA,",
+        "address": "Rua 5 de Junho, 251 - Cidade Universitária Zeferino Vaz - Campinas - SP",
+        "postal_code": "CEP: 13083-877",
+        "contact_phone": "Tel: (19) 3521-7010",
+        "contact_fax": "Fax: (19) 3521-7835",
+        "contact_email": "mascerct@unicamp.br"
+    }
 
 def save_temp_image(image_data):
     """
@@ -43,27 +75,29 @@ def save_temp_image(image_data):
     logging.debug(f"Saved temporary image: {temp_file_path}")
     return temp_file_path
 
-def draw_first_page(c, width, height, report_date, contract_number):
+def draw_first_page(c, width, height, report_date, config):
     """
-    Desenha a primeira página do PDF com cabeçalhos e informações do relatório.
+    Desenha a primeira página do PDF com cabeçalho e informações do relatório,
+    usando os textos do arquivo de configuração.
     """
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width / 2, height - 30 * mm, "DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE")
-    c.drawCentredString(width / 2, height - 40 * mm, "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS")
+    c.drawCentredString(width / 2, height - 30 * mm, config["header_1"])
+    c.drawCentredString(width / 2, height - 40 * mm, config["header_2"])
 
     c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, height - 60 * mm, "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC")
+    c.drawCentredString(width / 2, height - 60 * mm, config["title"])
 
     c.setFont("Helvetica", 12)
-    c.drawString(40 * mm, height - 80 * mm, f"DATA DO RELATÓRIO: {report_date}")
-    c.drawString(40 * mm, height - 90 * mm, f"CONTRATO Nº: {contract_number}")
-    c.drawString(40 * mm, height - 110 * mm, "Vistoria de campo realizada pelos técnicos da DAV/DMA,")
+    # Usa o prefixo definido no JSON e a data fornecida
+    c.drawString(40 * mm, height - 80 * mm, f"{config['date_prefix']} {report_date}")
+    c.drawString(40 * mm, height - 90 * mm, config["reference_number"])
+    c.drawString(40 * mm, height - 110 * mm, config["description"])
 
     # Footer
     c.setFont("Helvetica", 8)
-    c.drawCentredString(width / 2, 20 * mm, "Rua 5 de Junho, 251 - Cidade Universitária Zeferino Vaz - Campinas - SP")
-    c.drawCentredString(width / 2, 15 * mm, "CEP: 13083-877 - Tel: (19) 3521-7010 - Fax: (19) 3521-7835")
-    c.drawCentredString(width / 2, 10 * mm, "masecret@unicamp.br")
+    c.drawCentredString(width / 2, 20 * mm, config["address"])
+    c.drawCentredString(width / 2, 15 * mm, f"{config['postal_code']} - {config['contact_phone']} - {config['contact_fax']}")
+    c.drawCentredString(width / 2, 10 * mm, config["contact_email"])
 
 def draw_header(c, width, height, text_objects):
     """
@@ -114,24 +148,28 @@ def draw_signature_section(c, width, height, text_objects):
     c.drawRightString(width - 40 * mm, 25 * mm, f"{text_objects['location_date']}")
 
     c.setFont("Helvetica", 10)
-    c.drawCentredString(left_x, y_position + 20, "PREPOSTO CONTRATANTE")
+    # Utiliza sign1 e sign1_name para o lado esquerdo
+    c.drawCentredString(left_x, y_position + 20, text_objects.get("sign1", "PREPOSTO CONTRATANTE")) #Caso não tenha sido definido no JSON o valor padrão é "PREPOSTO CONTRATANTE"
+    c.drawCentredString(left_x, y_position + 10, text_objects.get("sign1_name", "")) #Caso não tenha sido definido no JSON o valor padrão é "" (vazio)
     c.drawCentredString(left_x, y_position, "Data: ........./........../...........")
 
     c.setFont("Helvetica", 10)
-    c.drawCentredString(right_x, y_position + 20, "PREPOSTO CONTRATADA")
-    c.drawCentredString(right_x, y_position + 10, text_objects['contracted_name'])
+    # Utiliza sign2 e sign2_name para o lado direito
+    c.drawCentredString(right_x, y_position + 20, text_objects.get("sign2", "PREPOSTO CONTRATADA")) #Caso não tenha sido definido no JSON o valor padrão é "PREPOSTO CONTRATADA"
+    c.drawCentredString(right_x, y_position + 10, text_objects.get("sign2_name", "Laércio P. Oliveira")) #Caso não tenha sido definido no JSON o valor padrão é "Laércio P. Oliveira"
     c.drawCentredString(right_x, y_position, "Data: .........../.........../...........")
 
-def create_pdf(entries, pdf_path, text_objects, report_date, contract_number):
+def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config):
     """
     Cria o PDF a partir das entradas fornecidas.
     
     Parâmetros:
-        entries (list): Lista de dicionários com as entradas (cada entrada deve ter as chaves 'image', 'description' e 'status').
-        pdf_path (str): Caminho para salvar o PDF.
-        text_objects (dict): Elementos textuais para cabeçalho, rodapé, etc.
-        report_date (str): Data do relatório.
-        contract_number (str): Número do contrato.
+      - entries (list): Lista de dicionários com as entradas (cada entrada deve ter 'image', 'description' e 'status').
+      - pdf_path (str): Caminho para salvar o PDF.
+      - text_objects (dict): Elementos textuais para cabeçalho, rodapé, etc.
+      - report_date (str): Data do relatório.
+      - reference_number (str): Número do contrato (obtido da configuração).
+      - config (dict): Dicionário com os textos carregados do JSON.
     """
     logging.info(f"Criando PDF em: {pdf_path}")
     c = canvas.Canvas(pdf_path, pagesize=landscape(A4))
@@ -146,7 +184,7 @@ def create_pdf(entries, pdf_path, text_objects, report_date, contract_number):
         total_pages += 1
 
     # Primeira página (capa)
-    draw_first_page(c, width, height, report_date, contract_number)
+    draw_first_page(c, width, height, report_date, config)
     c.setFont("Helvetica", 8)
     c.drawCentredString(width / 2, 5 * mm, f"Página 1 de {total_pages}")
     c.showPage()
@@ -210,7 +248,7 @@ def create_pdf(entries, pdf_path, text_objects, report_date, contract_number):
                     # A posição vertical permanece baseada em y_position:
                     img_y_position = y_position - img_draw_height
                     c.drawImage(temp_image_path, img_draw_x, img_y_position, width=img_draw_width, height=img_draw_height)
-                    description_x = x_position  # Você pode ajustar se desejar também centralizar o texto
+                    description_x = x_position  # Pode ajustar se desejar centralizar o texto também
                     description_y = img_y_position - 1 * mm  # Espaço entre a imagem e o texto
                 finally:
                     try:
@@ -248,27 +286,28 @@ def create_pdf(entries, pdf_path, text_objects, report_date, contract_number):
     logging.info("PDF criado com sucesso.")
 
 def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False):
-    """
-    Converte os dados do relatório diretamente em um PDF, sem depender do HTML.
-
-    Parâmetros:
-        report_date (str): Data do relatório.
-        contract_number (str): Número do contrato.
-        entries (list): Lista de dicionários com as entradas (cada entrada deve ter 'image', 'description' e 'status').
-        pdf_path (str): Caminho para salvar o PDF.
-        include_last_page (bool): Se True, adiciona a página de assinaturas.
-    """
+    # Carrega a configuração a partir do arquivo JSON
+    config = load_pdf_config()
+    
+    # Se desejar que o valor de 'contract_number' venha da configuração, pode fazer:
+    if not contract_number:
+        contract_number = config.get("reference_number", "")
+    
+    # Cria o dicionário de textos para o PDF, incluindo as novas chaves:
     text_objects = {
-        'section1': "DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE / PREFEITURA UNIVERSITÁRIA",
-        'section2': "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS",
-        'section3': "RELATÓRIO DE VISTORIA - SERVIÇOS PROVAC",
+        'section1': config["header_1"],
+        'section2': config["header_2"],
+        'section3': config["title"],
         'footer_lines': [
-            "Rua 5 de Junho, 251 - Cidade Universitária Zeferino Vaz - Campinas - SP",
-            "CEP: 13083-877 - Tel: (19) 3521-7010 - Fax: (19) 3521-7835",
-            "masecret@unicamp.br"
+            config["address"],
+            f"{config['postal_code']} - {config['contact_phone']} - {config['contact_fax']}",
+            config["contact_email"]
         ],
-        'location_date': f"Cidade Universitária Zeferino Vaz, Campinas-SP, {report_date}",
-        'contracted_name': "NOME: Laércio P. Oliveira",
+        'location_date': f"{config['address']}, {report_date}",
+        'sign1': config.get("sign1", "PREPOSTO CONTRATANTE"),
+        'sign1_name': config.get("sign1_name", ""),
+        'sign2': config.get("sign2", "PREPOSTO CONTRATADA"),
+        'sign2_name': config.get("sign2_name", "NOME: Laércio P. Oliveira"),
         'include_last_page': include_last_page
     }
-    create_pdf(entries, pdf_path, text_objects, report_date, contract_number)
+    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config)
