@@ -1,2 +1,2 @@
-# ReportSuiteDMA
+# ReportLabDMA
 A report making tool.
