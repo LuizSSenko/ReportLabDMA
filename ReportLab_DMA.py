@@ -1,4 +1,4 @@
-# pygeodma_gui.py
+# ReportLab_DMA.py
 import sys
 import os
 import logging
@@ -678,7 +678,7 @@ class PageFinish(QWizardPage):
 class MyWizard(QWizard):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Wizard de Comentários + Py Geo-DMA")
+        self.setWindowTitle("ReportLabDMA")
         self.default_size = (800, 600)
         self.image_list_page_size = (1200, 700)
         self.resize(*self.default_size)
