@@ -283,14 +283,22 @@ def process_images_with_progress(
     progress_callback: Optional[Callable[[int, int], None]] = None, 
     disable_states: bool = False
 ) -> None:
-    """
-    Processa as imagens renomeadas e gera um relatório HTML incorporando miniaturas, data/hora, localização, status e comentários.
-    """
     if status_dict is None:
         status_dict = {}
     
     # Carrega a configuração para os textos
     config = load_config()
+
+    # Converte a data informada (dd/mm/yyyy) para yyMMdd
+    try:
+        dt = datetime.strptime(report_date, "%d/%m/%Y")
+        date_slug = dt.strftime("%y%m%d")
+    except ValueError:
+        # Se a data for inválida ou vazia, cai no fallback (data do sistema)
+        date_slug = datetime.now().strftime("%y%m%d")
+
+    # Ajusta o nome do HTML usando a data do usuário
+    output_file = directory / f"{date_slug}_Relatorio.html"
     
     geojson_data = load_geojson()
     if selected_images is not None:
@@ -302,7 +310,6 @@ def process_images_with_progress(
         return
     total = len(image_files)
     logger.info(f"Encontradas {total} imagens para processar em: {directory}")
-    output_file = directory / "PYGeoDMA.html"
     try:
         with output_file.open("w", encoding="utf-8") as html_file:
             html_file.write("<html><head><meta charset='UTF-8'></head><body>")
@@ -532,17 +539,14 @@ def main() -> None:
     # Carrega o dicionário de status a partir do banco de dados (imagens_db.json)
     status_dict = load_image_status_db(directory)
     
-    # Atualiza status_dict antes de gerar o HTML
-    status_dict = load_image_status_db(directory)
-
-    # Gera o relatório HTML com status atualizado
+    # Gera o relatório HTML
     logger.info("Gerando relatório HTML...")
     process_images_with_progress(
         directory,
-        comments_dict={}, 
-        report_date=report_date, 
-        contract_number=contract_number, 
-        status_dict=status_dict  # Agora atualizado
+        comments_dict={},
+        report_date=report_date,
+        contract_number=contract_number,
+        status_dict=status_dict
     )
     
     # Coleta os dados para o PDF

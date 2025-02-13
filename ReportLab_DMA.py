@@ -50,7 +50,7 @@ if not logger.hasHandlers():
 
 # Constantes
 SUPPORTED_IMAGE_EXTENSIONS: List[str] = [".jpg", ".jpeg", ".png", ".heic"]
-DEFAULT_CONTRACT: str = "039/2019 - PROVAC TERCEIRIZAÇÃO DE MÃO DE OBRA LTDA"
+#DEFAULT_CONTRACT: str = "039/2019 - PROVAC TERCEIRIZAÇÃO DE MÃO DE OBRA LTDA"
 
 
 def compute_image_hash(img: Image.Image, quality: int = 85) -> Optional[str]:
@@ -351,9 +351,8 @@ class PageSelectDirectory(QWizardPage):
 class PageImageList(QWizardPage):
     """
     Página para seleção de imagens, definição de status, adição de comentários e definição da data do relatório.
-    
     Nesta versão, utiliza um QSplitter para dividir responsivamente a área de lista/comentários (lado esquerdo)
-    da área de pré-visualização (lado direito).
+    da área de pré-visualização (lado direito), além de validar a data no momento em que o usuário avança.
     """
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -372,7 +371,7 @@ class PageImageList(QWizardPage):
         
         # Botão "Editar template" logo acima do campo de data
         self.edit_template_button = QPushButton("Editar template")
-        self.edit_template_button.clicked.connect(self.open_template_editor)
+        self.edit_template_button.clicked.connect(self.open_template_editor) 
         header_container.addWidget(self.edit_template_button)
         
         # Campo para data do relatório
@@ -392,8 +391,6 @@ class PageImageList(QWizardPage):
         self.checkbox_disable_states = QCheckBox("Desativar a função de estados")
         self.checkbox_disable_states.setChecked(False)
         left_layout.addWidget(self.checkbox_disable_states)
-        # Conecta o checkbox a um método (se desejar, por exemplo, para atualizar a interface)
-        self.checkbox_disable_states.toggled.connect(self.on_disable_states_toggled)
         
         # Cabeçalho da lista de imagens
         header_layout = QHBoxLayout()
@@ -434,7 +431,7 @@ class PageImageList(QWizardPage):
         main_splitter.addWidget(right_widget)
         main_splitter.setStretchFactor(0, 1)
         main_splitter.setStretchFactor(1, 2)
-        main_splitter.setSizes([400, 600])
+        main_splitter.setSizes([500, 500])
         
         # Layout principal da página
         main_layout = QVBoxLayout(self)
@@ -453,15 +450,44 @@ class PageImageList(QWizardPage):
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(1000)
         self.save_timer.timeout.connect(self.save_database)
-    
+
+    def validatePage(self) -> bool:
+        """
+        Valida a data digitada. Se for inválida, exibe erro e impede avançar.
+        """
+        from datetime import datetime
+        # Pega a string de data que o usuário digitou
+        user_date_str = self.get_report_date().strip()
+
+        # Tenta converter a data para o formato dd/mm/yyyy
+        try:
+            datetime.strptime(user_date_str, "%d/%m/%Y")
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Data inválida",
+                "Por favor, corrija a data informada.\nEla deve estar no formato DD/MM/AAAA.",
+                QMessageBox.Ok
+            )
+            return False  # Impede o avanço para a próxima página
+
+        # Se passou, significa que a data está válida
+        return True
+
+    def nextId(self) -> int:
+        """
+        Indica qual a próxima página do Wizard após esta (provavelmente a PageFinish).
+        """
+        return WizardPage.FinishPage
+
     def open_template_editor(self):
-        """
-        Abre a janela de edição do template (pdf_config.json).
-        """
         dialog = TemplateEditorDialog(self)
         if dialog.exec_():
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(self, "Template Atualizado", "O template foi atualizado com sucesso.", QMessageBox.Ok)
+            QMessageBox.information(self, 
+                                    "Template Atualizado", 
+                                    "O template foi atualizado com sucesso.", 
+                                    QMessageBox.Ok)
 
     def get_report_date(self) -> str:
         """
@@ -617,7 +643,7 @@ class PageImageList(QWizardPage):
             try:
                 _, img = get_exif_and_image(image_data.file_path)
                 if img:
-                    base64_thumb, _ = generate_thumbnail_base64(img, max_size=(600,600))
+                    base64_thumb, _ = generate_thumbnail_base64(img, max_size=(600, 600))
                     pixmap = QPixmap()
                     pixmap.loadFromData(base64.b64decode(base64_thumb))
                     self.preview_label.setPixmap(pixmap.scaled(self.preview_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -694,46 +720,87 @@ class PageFinish(QWizardPage):
         self.setSubTitle("Clique em 'Concluir' para finalizar o processo.")
         layout = QVBoxLayout()
         self.setLayout(layout)
+
         info_label = QLabel("Pronto para finalizar o processamento.")
         layout.addWidget(info_label)
+
         self.checkbox_generate_pdf = QCheckBox("Gerar PDF automaticamente após processamento")
         self.checkbox_generate_pdf.setChecked(True)
         layout.addWidget(self.checkbox_generate_pdf)
+
         self.checkbox_include_signature = QCheckBox("Adicionar página de assinaturas")
         self.checkbox_include_signature.setChecked(False)
         layout.addWidget(self.checkbox_include_signature)
+
         self.threadpool = QThreadPool()
         self.progress_dialog: Optional[QProgressDialog] = None
         self.pdf_progress_dialog: Optional[QProgressDialog] = None
+        self.generated_pdf_path = None
 
     def nextId(self) -> int:
         return -1
 
     def validatePage(self) -> bool:
         """
-        Inicia o processamento das imagens e bloqueia o botão 'Concluir'.
+        Valida a data que o usuário digitou na página anterior e,
+        se estiver tudo correto, inicia o processamento das imagens.
+        Caso contrário, exibe uma mensagem de erro e interrompe o fluxo.
         """
+        from datetime import datetime
+        # 1) Obtém o valor do campo "Data do Relatório" na página 2
+        wizard = self.wizard()
+        image_page = wizard.page(WizardPage.ImageListPage)
+        report_date = image_page.get_report_date().strip()
+
+        # 2) Tenta converter a data para o formato dd/mm/yyyy
+        try:
+            datetime.strptime(report_date, "%d/%m/%Y")
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Data inválida",
+                "Por favor, corrija a data informada.\nEla deve estar no formato DD/MM/AAAA.",
+                QMessageBox.Ok
+            )
+            # Reabilita o botão "Concluir" e interrompe aqui
+            self.wizard().button(QWizard.FinishButton).setEnabled(True)
+            return False
+
+        # 3) Se a data estiver válida, prossegue com o fluxo normal
         self.wizard().button(QWizard.FinishButton).setEnabled(False)
         self.run_image_processing()
+        # Retorna False para não avançar imediatamente de página,
+        # pois o processamento é assíncrono (usamos threads)
         return False
 
     def run_image_processing(self) -> None:
         wizard = self.wizard()
         directory = Path(wizard.page(WizardPage.SelectDirectoryPage).line_edit.text())
-        image_page: PageImageList = wizard.page(WizardPage.ImageListPage)
+        image_page = wizard.page(WizardPage.ImageListPage)
+
+        # Coleta dict de comentários, imagens selecionadas, status, etc.
         comments_dict = image_page.get_comment_dict()
         selected_images = image_page.get_selected_images()
-        status_dict = image_page.get_status_dict()  # Obtém o status atualizado
+        status_dict = image_page.get_status_dict()  
         report_date = image_page.get_report_date()
-        contract_number = DEFAULT_CONTRACT
+        
+        # Carrega config p/ obter número do contrato
+        from main import load_config
+        config = load_config()
+        contract_number = config.get("reference_number", "Contrato Exemplo")
+
         disable_states = image_page.get_disable_states()
-        # Cria o worker passando o status_dict correto:
-        worker = ProcessImagesRunnable(directory, comments_dict, selected_images,
-                                    report_date, contract_number, status_dict, disable_states)
+
+        # Cria o worker para processar as imagens e gerar o HTML
+        worker = ProcessImagesRunnable(
+            directory, comments_dict, selected_images,
+            report_date, contract_number, status_dict, disable_states
+        )
         worker.signals.progress.connect(self.on_progress_update)
         worker.signals.finished.connect(self.on_processing_finished)
         worker.signals.error.connect(self.on_processing_error)
         self.threadpool.start(worker)
+
         self.progress_dialog = QProgressDialog("Processando imagens e gerando HTML...", None, 0, 100, self)
         self.progress_dialog.setWindowTitle("Aguarde")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
@@ -754,6 +821,7 @@ class PageFinish(QWizardPage):
         """
         if self.progress_dialog:
             self.progress_dialog.close()
+
         if self.checkbox_generate_pdf.isChecked():
             self.run_pdf_generation(self.checkbox_include_signature.isChecked())
         else:
@@ -769,26 +837,42 @@ class PageFinish(QWizardPage):
         self.wizard().close()
 
     def run_pdf_generation(self, include_signature: bool) -> None:
-        """
-        Inicia a geração do PDF em uma thread separada.
-        """
         wizard = self.wizard()
         directory = Path(wizard.page(WizardPage.SelectDirectoryPage).line_edit.text())
-        report_date = wizard.page(WizardPage.ImageListPage).get_report_date()
-        contract_number = DEFAULT_CONTRACT
-        pdf_path = directory / f"{datetime.now().strftime('%y%m%d')}_Relatorio.pdf"
-        image_page: PageImageList = wizard.page(WizardPage.ImageListPage)
+
+        # Pega a data digitada na página 2
+        user_date_str = wizard.page(WizardPage.ImageListPage).get_report_date()
+
+        # Converte de dd/mm/yyyy para datetime e re-formata para yyMMdd
+        try:
+            dt = datetime.strptime(user_date_str, "%d/%m/%Y")
+            formatted_date_str = dt.strftime("%y%m%d")
+        except ValueError:
+            formatted_date_str = datetime.now().strftime('%y%m%d')
+
+        from main import load_config
+        config = load_config()
+        contract_number = config.get("reference_number", "Contrato Exemplo")
+
+        # Usa a data digitada (em formato yyMMdd) para gerar o nome do PDF
+        pdf_path = directory / f"{formatted_date_str}_Relatorio.pdf"
+        self.generated_pdf_path = pdf_path
+
+        image_page = wizard.page(WizardPage.ImageListPage)
         comments_dict = image_page.get_comment_dict()
         status_dict = image_page.get_status_dict()
         disable_states = image_page.get_disable_states()
         selected_images = image_page.get_selected_images()
+
         worker = PDFGenerationRunnable(
-            directory, report_date, contract_number, pdf_path, include_signature,
-            comments_dict, status_dict, disable_states, selected_images
+            directory, user_date_str, contract_number, pdf_path,
+            include_signature, comments_dict, status_dict,
+            disable_states, selected_images
         )
         worker.signals.finished.connect(self.on_pdf_finished)
         worker.signals.error.connect(self.on_pdf_error)
         self.threadpool.start(worker)
+
         self.pdf_progress_dialog = QProgressDialog("Gerando PDF...", None, 0, 0, self)
         self.pdf_progress_dialog.setWindowTitle("Aguarde")
         self.pdf_progress_dialog.setWindowModality(Qt.WindowModal)
@@ -816,9 +900,21 @@ class PageFinish(QWizardPage):
         """
         Exibe mensagem informando que o PDF foi gerado com sucesso.
         """
-        directory = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text()
-        nome_pdf = f"{datetime.now().strftime('%y%m%d')}_Relatorio.pdf"
-        QMessageBox.information(self, "PDF Gerado", f"PDF gerado com sucesso em:\n{directory}/{nome_pdf}", QMessageBox.Ok)
+        if self.generated_pdf_path is not None:
+            QMessageBox.information(
+                self,
+                "PDF Gerado",
+                f"PDF gerado com sucesso em:\n{self.generated_pdf_path}",
+                QMessageBox.Ok
+            )
+        else:
+            directory = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text()
+            QMessageBox.information(
+                self,
+                "PDF Gerado",
+                f"PDF gerado com sucesso em:\n{directory}",
+                QMessageBox.Ok
+            )
         self.wizard().close()
 
 
