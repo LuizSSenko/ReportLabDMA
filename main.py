@@ -35,7 +35,7 @@ def load_config() -> dict:
     Carrega o arquivo JSON de configuração com os textos para o HTML e PDF.
     Se ocorrer algum erro, retorna um dicionário com valores padrão.
     """
-    config_path = Path(__file__).parent / "pdf_config.json"
+    config_path = Path(__file__).parent / "pdf_config_default.json"
     try:
         with config_path.open("r", encoding="utf-8") as f:
             config = json.load(f)

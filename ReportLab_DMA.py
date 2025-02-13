@@ -390,6 +390,7 @@ class PageImageList(QWizardPage):
         # Adiciona o checkbox para desativar a função de estados
         self.checkbox_disable_states = QCheckBox("Desativar a função de estados")
         self.checkbox_disable_states.setChecked(False)
+        self.checkbox_disable_states.toggled.connect(self.on_disable_states_toggled)
         left_layout.addWidget(self.checkbox_disable_states)
         
         # Cabeçalho da lista de imagens

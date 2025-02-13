@@ -67,7 +67,7 @@ class TemplateEditorDialog(QDialog):
         self.resize(1300, 700)
         
         # Definição de arquivos de config
-        self.default_config_path = Path(__file__).parent / "pdf_config_DMA.json"
+        self.default_config_path = Path(__file__).parent / "pdf_config_default.json"
         self.user_config_path = Path(__file__).parent / "pdf_config_user.json"
 
         # Carrega config

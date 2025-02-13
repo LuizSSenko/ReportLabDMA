@@ -33,23 +33,31 @@ STATUS_COLORS = {
 }
 
 def load_pdf_config():
-    """
-    Carrega o arquivo de configuração JSON contendo os textos do PDF.
-    Caso o arquivo não seja encontrado, retorna um dicionário com valores padrão.
-    """
-    config_path = Path(__file__).parent / "pdf_config.json"
-    if config_path.exists():
+    user_config_path = Path(__file__).parent / "pdf_config_user.json"
+    default_config_path = Path(__file__).parent / "pdf_config_default.json"
+    
+    # Tenta carregar o arquivo de configuração do usuário
+    if user_config_path.exists():
         try:
-            with config_path.open("r", encoding="utf-8") as f:
+            with user_config_path.open("r", encoding="utf-8") as f:
                 config = json.load(f)
-            logging.info(f"Arquivo de configuração '{config_path}' carregado com sucesso.")
+            logging.info(f"Configuração do usuário carregada de {user_config_path}.")
             return config
         except Exception as e:
-            logging.error(f"Erro ao carregar o arquivo de configuração: {e}", exc_info=True)
-    else:
-        logging.warning(f"Arquivo de configuração '{config_path}' não encontrado. Usando valores padrão.")
+            logging.error(f"Erro ao carregar a configuração do usuário: {e}", exc_info=True)
     
-    # Valores padrão (caso o JSON não exista ou ocorra algum erro)
+    # Se não existir ou der erro, carrega a configuração padrão
+    if default_config_path.exists():
+        try:
+            with default_config_path.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+            logging.info("Configuração padrão carregada.")
+            return config
+        except Exception as e:
+            logging.error(f"Erro ao carregar a configuração padrão: {e}", exc_info=True)
+    
+    # Caso nenhum arquivo seja encontrado, retorna um dicionário com valores padrão
+    logging.warning("Nenhum arquivo de configuração encontrado. Usando valores padrão.")
     return {
         "header_1": "DAV - DIRETORIA DE ÁREAS VERDES / DMA - DIVISÃO DE MEIO AMBIENTE",
         "header_2": "UNICAMP - UNIVERSIDADE ESTADUAL DE CAMPINAS",
