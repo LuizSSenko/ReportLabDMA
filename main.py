@@ -71,7 +71,7 @@ def load_geojson() -> Dict[str, Any]:
     """
     Carrega o arquivo GeoJSON contendo as informações de quadras.
     """
-    geojson_path = Path(__file__).parent / "quadras2024_wgs84.geojson"
+    geojson_path = Path(__file__).parent / "map.geojson"
     try:
         with geojson_path.open('r', encoding='utf-8') as file:
             data = json.load(file)
@@ -152,31 +152,60 @@ def extract_image_datetime(image_path: Path) -> Optional[str]:
         logger.error(f"Erro ao obter data de modificação de {image_path}: {e}", exc_info=True)
         return None
 
-def find_nearest_geometry(features: List[Dict[str, Any]], lat: float, lon: float) -> Tuple[str, str, float]:
+def find_nearest_geometry(features: List[Dict[str, Any]], lat: float, lon: float) -> Tuple[str, str, str, float]:
     """
-    Encontra a feature mais próxima das coordenadas fornecidas.
+    Retorna o tipo de área ("Quadra" ou "Canteiro"), o identificador dessa área (valor da propriedade),
+    a sigla e a distância até o polígono. Se o ponto estiver contido em um polígono, a distância é 0.
     """
     point = Point(lon, lat)
+    
+    # Primeiro, verifica se o ponto está dentro de algum polígono.
+    for feature in features:
+        try:
+            geom = shape(feature.get('geometry'))
+            if geom.contains(point):
+                props = feature.get('properties', {})
+                if 'Quadra' in props and props['Quadra']:
+                    tipo_area = "Quadra"
+                    id_area = props['Quadra']
+                elif 'Canteiro' in props and props['Canteiro']:
+                    tipo_area = "Canteiro"
+                    id_area = props['Canteiro']
+                else:
+                    tipo_area = "Desconhecida"
+                    id_area = "Desconhecida"
+                return tipo_area, id_area, props.get('Sigla', 'Desconhecida'), 0.0
+        except Exception as e:
+            logger.error(f"Erro ao verificar contenção na feature: {e}", exc_info=True)
+    
+    # Se o ponto não estiver dentro de nenhum polígono, procura o polígono mais próximo.
     min_distance = float('inf')
-    nearest_quad = None
-
+    nearest_tipo = "Desconhecida"
+    nearest_id = "Desconhecida"
+    nearest_sigla = "Desconhecida"
     for feature in features:
         try:
             geom = shape(feature.get('geometry'))
             distance = point.distance(geom)
             if distance < min_distance:
                 min_distance = distance
-                nearest_quad = feature.get('properties')
+                props = feature.get('properties', {})
+                if 'Quadra' in props and props['Quadra']:
+                    nearest_tipo = "Quadra"
+                    nearest_id = props['Quadra']
+                elif 'Canteiro' in props and props['Canteiro']:
+                    nearest_tipo = "Canteiro"
+                    nearest_id = props['Canteiro']
+                else:
+                    nearest_tipo = "Desconhecida"
+                    nearest_id = "Desconhecida"
+                nearest_sigla = props.get('Sigla', 'Desconhecida')
         except Exception as e:
-            logger.error(f"Erro ao processar feature: {e}", exc_info=True)
-            continue
+            logger.error(f"Erro ao processar feature para distância: {e}", exc_info=True)
+    
+    return nearest_tipo, nearest_id, nearest_sigla, min_distance
 
-    if nearest_quad:
-        quadra = nearest_quad.get('Quadra', 'Desconhecida')
-        sigla = nearest_quad.get('Sigla', 'Desconhecida')
-        return quadra, sigla, min_distance
 
-    return "Sem quadra", "Sem sigla", float('inf')
 
 def is_friendly_name(filename: str) -> bool:
     """
@@ -213,64 +242,78 @@ def generate_thumbnail_base64(
 
 def rename_images(directory: Path, selected_images: Optional[List[str]] = None) -> List[str]:
     """
-    Renomeia os arquivos de imagem no diretório utilizando informações do EXIF e GeoJSON.
+    Renomeia os arquivos de imagem no diretório agrupando-os por localização.
+    Essa versão sempre renomeia os arquivos (mesmo que já estejam em formato amigável)
+    para que a ordem final seja determinada pela localização (sigla).
     """
     geojson_data = load_geojson()
+    # Obtemos a lista de arquivos de imagem
     if selected_images is not None:
-        image_files = sorted([directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS])
+        image_files = [directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS]
     else:
-        image_files = sorted([f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS])
-    renamed_files: List[str] = []
-    existing_friendly = [f for f in image_files if is_friendly_name(f.name)]
-    existing_indices = []
-    for f in existing_friendly:
-        match = re.match(r"^(\d{3})\s*-\s*.+\.\w+$", f.name)
-        if match:
-            existing_indices.append(int(match.group(1)))
-    max_index = max(existing_indices) if existing_indices else 0
-    next_index = max_index + 1
-
+        image_files = [f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS]
+    
+    # Cria uma lista de tuplas (caminho da imagem, sigla)
+    items = []
     for image_file in image_files:
-        logger.info(f"Processando imagem: {image_file.name}...")
         try:
-            if is_friendly_name(image_file.name):
-                logger.info(f" -> Já está no formato amigável: {image_file.name}")
-                renamed_files.append(image_file.name)
-                continue
-            exif_data, img = get_exif_and_image(image_file)
-            gps_info = exif_data.get(34853) if exif_data else None
-            coordinates, gmaps_link = get_coordinates(gps_info)
-            capture_datetime = extract_image_datetime(image_file)
-            date_time_formatted = capture_datetime if capture_datetime else "DataDesconhecida"
-            if coordinates != "Sem localização":
-                try:
-                    lat, lon = map(float, coordinates.split(", "))
-                    quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
-                except Exception as conv_err:
-                    logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
-                    quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
-            else:
-                quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
-            if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
+            exif_data, _ = get_exif_and_image(image_file)
+        except Exception as e:
+            logger.error(f"Erro ao ler EXIF de {image_file.name}: {e}", exc_info=True)
+            exif_data = {}
+        gps_info = exif_data.get(34853) if exif_data else None
+        coordinates, _ = get_coordinates(gps_info)
+        if coordinates != "Sem localização":
+            try:
+                lat, lon = map(float, coordinates.split(", "))
+                # Busca a quadra e sigla mais próxima
+                _, _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
+            except Exception as conv_err:
+                logger.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}", exc_info=True)
                 sigla = "Desconhecida"
-            ext = image_file.suffix
+        else:
+            sigla = "Desconhecida"
+        if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
+            sigla = "Desconhecida"
+        items.append((image_file, sigla))
+    
+    # Ordena a lista por sigla (em ordem alfabética) e, em caso de empate, pelo nome original
+    items.sort(key=lambda x: (x[1].upper(), x[0].name))
+    
+    # Para evitar conflitos de nomes (se algum arquivo já estiver no formato "NNN - ..."),
+    # vamos primeiro renomear todos para um nome temporário.
+    temp_items = []
+    for image_file, sigla in items:
+        temp_name = f"temp_{image_file.name}"
+        temp_path = directory / temp_name
+        try:
+            image_file.rename(temp_path)
+            temp_items.append((temp_path, sigla))
+        except Exception as e:
+            logger.error(f"Erro ao renomear {image_file.name} para temporário: {e}", exc_info=True)
+    
+    # Agora, renomeia os arquivos temporários para o novo nome final, de 001 até n
+    renamed_files: List[str] = []
+    next_index = 1
+    for temp_path, sigla in temp_items:
+        ext = temp_path.suffix
+        new_filename = generate_new_filename(next_index, sigla, ext)
+        new_path = directory / new_filename
+        # Se por acaso o novo nome já existir (bem improvável agora), incrementa o índice
+        while new_path.exists():
+            next_index += 1
             new_filename = generate_new_filename(next_index, sigla, ext)
             new_path = directory / new_filename
-            while new_path.exists():
-                logger.warning(f" -> O arquivo {new_filename} já existe. Incrementando o índice.")
-                next_index += 1
-                new_filename = generate_new_filename(next_index, sigla, ext)
-                new_path = directory / new_filename
-            try:
-                image_file.rename(new_path)
-                logger.info(f" -> Renomeado para {new_filename}")
-                renamed_files.append(new_filename)
-                next_index += 1
-            except OSError as os_err:
-                logger.error(f"Erro ao renomear {image_file.name}: {os_err}", exc_info=True)
+        try:
+            temp_path.rename(new_path)
+            logger.info(f"Renomeado {temp_path.name} para {new_filename}")
+            renamed_files.append(new_filename)
         except Exception as e:
-            logger.error(f"Erro ao processar {image_file.name}: {e}", exc_info=True)
+            logger.error(f"Erro ao renomear {temp_path.name} para {new_filename}: {e}", exc_info=True)
+        next_index += 1
+
     return renamed_files
+
 
 def process_images_with_progress(
     directory: Path, 
@@ -347,12 +390,13 @@ def process_images_with_progress(
                     if coordinates != "Sem localização":
                         try:
                             lat, lon = map(float, coordinates.split(", "))
-                            quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
+                            tipo_area, id_area, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
                         except Exception as conv_err:
                             logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
-                            quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
+                            tipo_area, id_area, sigla, distance = "Sem área", "Sem área", "Desconhecida", float('inf')
                     else:
-                        quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
+                        tipo_area, id_area, sigla, distance = "Sem área", "Sem área", "Desconhecida", float('inf')
+
                     if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
                         sigla = "Desconhecida"
                     base64_thumb, (thumb_width, thumb_height) = generate_thumbnail_base64(img)
@@ -370,9 +414,10 @@ def process_images_with_progress(
                     html_file.write(f"<strong>{title_number}</strong><br>")
                     html_file.write(f"<strong>Data e hora da imagem:</strong> {date_time_formatted}<br>")
                     if distance == 0:
-                        html_file.write(f"<strong>Quadra:</strong> {quadra}, <strong>Sigla:</strong> {sigla}<br>")
+                        html_file.write(f"<strong>{tipo_area}:</strong> {id_area}, <strong>Sigla:</strong> {sigla}<br>")
                     else:
-                        html_file.write(f"<strong>Próximo de:</strong> Quadra {quadra}, <strong>Sigla:</strong> {sigla}<br>")
+                        html_file.write(f"<strong>Próximo de:</strong> {tipo_area} {id_area}, <strong>Sigla:</strong> {sigla}<br>")
+
                     html_file.write("<strong>Localização:</strong> ")
                     if gmaps_link != "Sem localização":
                         html_file.write(f'<a href="{gmaps_link}" target="_blank">{gmaps_link}</a>')
@@ -442,12 +487,12 @@ def collect_entries(
             if coordinates != "Sem localização":
                 try:
                     lat, lon = map(float, coordinates.split(", "))
-                    quadra, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
+                    tipo_area, id_area, sigla, distance = find_nearest_geometry(geojson_data['features'], lat, lon)
                 except Exception as conv_err:
                     logger.error(f"Erro ao converter coordenadas: {conv_err}", exc_info=True)
-                    quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
+                    tipo_area, id_area, sigla, distance = "Sem área", "Sem área", "Desconhecida", float('inf')
             else:
-                quadra, sigla, distance = "Sem quadra", "Sem sigla", float('inf')
+                tipo_area, id_area, sigla, distance = "Sem área", "Sem área", "Desconhecida", float('inf')
             
             if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
                 sigla = "Desconhecida"
@@ -457,7 +502,7 @@ def collect_entries(
             description = (
                 f"<strong>{idx:03}</strong><br/>"
                 f"<strong>Data e hora:</strong> {date_time_formatted}<br/>"
-                f"<strong>Quadra:</strong> {quadra}, <strong>Sigla:</strong> {sigla}<br/>"
+                f"<strong>{tipo_area}:</strong> {id_area}, <strong>Sigla:</strong> {sigla}<br/>"
                 f"<strong>Localização:</strong> <a href='{gmaps_link}' target='_blank'>{gmaps_link}</a><br/>"
             )
             
@@ -474,7 +519,14 @@ def collect_entries(
                 description += f"<u><b>Comentários</b></u><br/>{formatted_comment}<br/>"
             
             image_data = base64.b64decode(base64_thumb)
-            entry = {'image': image_data, 'description': description, 'status': status}
+            entry = {
+                'image': image_data,
+                'description': description,
+                'status': status,
+                'tipo_area': tipo_area,
+                'id_area': id_area,
+                'sigla': sigla
+            }
             entries.append(entry)
         except Exception as e:
             logger.error(f"Erro ao coletar dados para {image_file.name}: {e}", exc_info=True)

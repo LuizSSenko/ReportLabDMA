@@ -27,6 +27,7 @@
 	- Uses hash to identify images, its selection state, comment and estado de serviço.
 	- You can turn off the computer in the middle of report working without issues, everything will be saved, automatically.
 
-
-TODO:
-- New page with "Estatus do cumprimento dos serviços", whith the table data boss asked me.
+- 14/02/25 - New features:
+	- Template editor with preview window.
+	- Output service status table on page 2 and 3.
+		- And if you click on the "Sigla", it warps you to the first occurence in the pdf.
