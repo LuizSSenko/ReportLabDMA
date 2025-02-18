@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QTextEdit, QProgressDialog, QMessageBox, QCheckBox,
     QRadioButton, QButtonGroup, QSizePolicy, QGraphicsOpacityEffect, QSplitter
 )
-from PyQt5.QtCore import Qt, QThreadPool, pyqtSignal, QObject, pyqtSlot, QRunnable, QTimer
+from PyQt5.QtCore import Qt, QThreadPool, pyqtSignal, QObject, pyqtSlot, QRunnable, QTimer, QEvent
 from PyQt5.QtGui import QPixmap
 
 from PIL import Image, ExifTags, ImageOps
@@ -30,7 +30,8 @@ from main import (
     rename_images,
     collect_entries,
     get_exif_and_image,
-    generate_thumbnail_base64
+    generate_thumbnail_from_file,
+    load_config
 )
 from pdf_tools import convert_data_to_pdf
 from template_editor import TemplateEditorDialog
@@ -349,51 +350,36 @@ class PageSelectDirectory(QWizardPage):
 # =============================================================================
 
 class PageImageList(QWizardPage):
-    """
-    Página para seleção de imagens, definição de status, adição de comentários e definição da data do relatório.
-    Nesta versão, utiliza um QSplitter para dividir responsivamente a área de lista/comentários (lado esquerdo)
-    da área de pré-visualização (lado direito), além de validar a data no momento em que o usuário avança.
-    """
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setTitle("Selecionar Imagens, Definir Status, Adicionar Comentários e Data do Relatório")
         self.setSubTitle("Selecione as imagens, defina o status, insira comentários e informe a data do relatório.")
-        
-        # Cria um QSplitter para dividir responsivamente as áreas esquerda e direita
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        # Cria um QSplitter para dividir a área de lista/comentários da pré-visualização
         main_splitter = QSplitter(Qt.Horizontal)
         
-        # Lado esquerdo: área com lista de imagens, comentários, data, etc.
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         
-        # --- Área de cabeçalho (botão "Editar template" + campo de data) ---
         header_container = QVBoxLayout()
-        
-        # Botão "Editar template" logo acima do campo de data
         self.edit_template_button = QPushButton("Editar template")
         self.edit_template_button.clicked.connect(self.open_template_editor) 
         header_container.addWidget(self.edit_template_button)
         
-        # Campo para data do relatório
         date_layout = QHBoxLayout()
         date_label = QLabel("Data do Relatório:")
-        from datetime import datetime
         self.report_date_line_edit = QLineEdit(datetime.now().strftime("%d/%m/%Y"))
         date_layout.addWidget(date_label)
         date_layout.addWidget(self.report_date_line_edit)
         header_container.addLayout(date_layout)
-        
-        # Adiciona o header_container ao layout esquerdo
         left_layout.addLayout(header_container)
-        # --- Fim da área de cabeçalho ---
         
-        # Adiciona o checkbox para desativar a função de estados
         self.checkbox_disable_states = QCheckBox("Desativar a função de estados")
         self.checkbox_disable_states.setChecked(False)
         self.checkbox_disable_states.toggled.connect(self.on_disable_states_toggled)
         left_layout.addWidget(self.checkbox_disable_states)
         
-        # Cabeçalho da lista de imagens
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("Incluir"), 1)
         header_layout.addWidget(QLabel("Nome da Imagem"), 3)
@@ -402,23 +388,19 @@ class PageImageList(QWizardPage):
         header_layout.addWidget(QLabel("Não Concluído"), 1)
         left_layout.addLayout(header_layout)
         
-        # Lista de imagens
         self.list_widget = QListWidget()
         self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.list_widget)
         
-        # Área de comentário
         self.comment_label = QLabel("Comentário:")
         left_layout.addWidget(self.comment_label)
         self.comment_text = QTextEdit()
         self.comment_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.comment_text)
         
-        # Define os stretch factors para distribuir o espaço vertical
         left_layout.setStretchFactor(self.list_widget, 3)
         left_layout.setStretchFactor(self.comment_text, 1)
         
-        # Lado direito: pré-visualização da imagem
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         self.preview_label = QLabel("Miniatura da Imagem")
@@ -427,40 +409,33 @@ class PageImageList(QWizardPage):
         self.preview_label.setStyleSheet("border: 1px solid black;")
         right_layout.addWidget(self.preview_label)
         
-        # Adiciona os widgets esquerdo e direito ao splitter
         main_splitter.addWidget(left_widget)
         main_splitter.addWidget(right_widget)
         main_splitter.setStretchFactor(0, 1)
         main_splitter.setStretchFactor(1, 2)
         main_splitter.setSizes([500, 500])
         
-        # Layout principal da página
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(main_splitter)
         
-        # Dicionário para armazenar os objetos ImageData (chave: filename)
         self.image_data_map: Dict[str, ImageData] = {}
         
-        # Conecta sinais para atualização
         self.list_widget.currentItemChanged.connect(self.on_item_changed)
         self.comment_text.textChanged.connect(self.save_comment_current)
         
-        # Timer para debounce do salvamento (1 segundo)
-        from PyQt5.QtCore import QTimer
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(1000)
         self.save_timer.timeout.connect(self.save_database)
+        
+        # Instala o event filter para capturar eventos de teclado e foco
+        self.installEventFilter(self)
+        self.comment_text.installEventFilter(self)
+        self.waiting_macro_insertion = False
 
     def validatePage(self) -> bool:
-        """
-        Valida a data digitada. Se for inválida, exibe erro e impede avançar.
-        """
         from datetime import datetime
-        # Pega a string de data que o usuário digitou
         user_date_str = self.get_report_date().strip()
-
-        # Tenta converter a data para o formato dd/mm/yyyy
         try:
             datetime.strptime(user_date_str, "%d/%m/%Y")
         except ValueError:
@@ -470,36 +445,24 @@ class PageImageList(QWizardPage):
                 "Por favor, corrija a data informada.\nEla deve estar no formato DD/MM/AAAA.",
                 QMessageBox.Ok
             )
-            return False  # Impede o avanço para a próxima página
-
-        # Se passou, significa que a data está válida
+            return False
         return True
 
     def nextId(self) -> int:
-        """
-        Indica qual a próxima página do Wizard após esta (provavelmente a PageFinish).
-        """
         return WizardPage.FinishPage
 
     def open_template_editor(self):
         dialog = TemplateEditorDialog(self)
         if dialog.exec_():
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(self, 
                                     "Template Atualizado", 
                                     "O template foi atualizado com sucesso.", 
                                     QMessageBox.Ok)
 
     def get_report_date(self) -> str:
-        """
-        Retorna a data informada pelo usuário para o relatório.
-        """
         return self.report_date_line_edit.text().strip()
 
     def on_disable_states_toggled(self, checked: bool) -> None:
-        """
-        Habilita ou desabilita os radio buttons dos itens da lista conforme o estado do checkbox.
-        """
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             widget = self.list_widget.itemWidget(item)
@@ -513,16 +476,12 @@ class PageImageList(QWizardPage):
                     rb.setGraphicsEffect(None)
 
     def initializePage(self) -> None:
-        """
-        Inicializa a página carregando as imagens e dados previamente salvos.
-        """
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
         directory = Path(directory_text)
 
         self.list_widget.clear()
         self.image_data_map.clear()
 
-        # Carrega os arquivos de imagem suportados e computa o hash para cada um
         image_files = sorted([f for f in directory.iterdir() if f.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS])
         for image_file in image_files:
             image_data = ImageData(image_file)
@@ -538,29 +497,73 @@ class PageImageList(QWizardPage):
                 image_data.hash = None
             self.image_data_map[image_data.filename] = image_data
             widget = ImageStatusItemWidget(image_data)
+            # Conecta o clique do nome da imagem para ativar o modo de macro
             widget.lblName.clicked.connect(self.set_comment_focus)
             item = QListWidgetItem()
             item.setSizeHint(widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, widget)
 
-        # Carrega informações previamente salvas (se houver)
         self.load_database()
 
+        # Se houver pelo menos uma imagem, selecionamos a primeira
+        # E já deixamos o modo de macros ativo, sem precisar clicar no nome.
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
             self.load_current_item_data()
+            # Ativa o "modo macro" automaticamente
+            self.set_comment_focus()
 
     def set_comment_focus(self) -> None:
-        """
-        Define o foco na área de comentário.
-        """
-        self.comment_text.setFocus()
+        self.waiting_macro_insertion = True
+        self.comment_text.setStyleSheet("background-color: #FFFFCC;")  # amarelo claro
+        self.setFocus()  # Faz com que a própria página receba os eventos de teclado
+
+    def keyPressEvent(self, event):
+        if self.waiting_macro_insertion:
+            key = event.key()
+            mapping = {
+                Qt.Key_1: "b1",
+                Qt.Key_2: "b2",
+                Qt.Key_3: "b3",
+                Qt.Key_4: "b4",
+                Qt.Key_5: "b5",
+                Qt.Key_6: "b6",
+                Qt.Key_7: "b7",
+                Qt.Key_8: "b8",
+                Qt.Key_9: "b9",
+                Qt.Key_0: "b0"
+            }
+            if key in mapping:
+                macro_key = mapping[key]
+                # Obtém o diretório onde o script está localizado
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                macros_path = os.path.join(script_dir, "macros.json")
+                try:
+                    with open(macros_path, "r", encoding="utf-8") as f:
+                        macros = json.load(f)
+                except Exception as e:
+                    QMessageBox.warning(self, "Erro", f"Não foi possível carregar o arquivo macros.json: {e}", QMessageBox.Ok)
+                    macros = {}
+                macro_text = macros.get(macro_key, "")
+                current_text = self.comment_text.toPlainText()
+                new_text = current_text + macro_text + "\n"
+                self.comment_text.setText(new_text)
+                event.accept()
+                return  # Não propaga o evento
+        super().keyPressEvent(event)
+
+
+    def eventFilter(self, obj, event):
+        # Se o usuário clicar na caixa de comentários, desativa o modo macro
+        if obj == self.comment_text and event.type() == QEvent.MouseButtonPress:
+            self.waiting_macro_insertion = False
+            self.comment_text.setStyleSheet("")
+        return super().eventFilter(obj, event)
+
+
 
     def load_database(self) -> None:
-        """
-        Carrega o arquivo JSON de banco de dados (imagens_db.json) e atualiza os dados de cada imagem.
-        """
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
         db_path = Path(directory_text) / "imagens_db.json"
         if db_path.exists():
@@ -600,9 +603,6 @@ class PageImageList(QWizardPage):
                 widget.lblName.setStyleSheet("")
 
     def save_database(self) -> None:
-        """
-        Salva os comentários, status e o estado de inclusão de cada imagem em um arquivo JSON.
-        """
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
         db_path = Path(directory_text) / "imagens_db.json"
         db = {}
@@ -621,9 +621,6 @@ class PageImageList(QWizardPage):
             logger.error(f"Erro ao salvar banco de dados: {e}", exc_info=True)
 
     def on_item_changed(self, current: QListWidgetItem, previous: Optional[QListWidgetItem]) -> None:
-        """
-        Salva os dados do item anterior e carrega os dados do item atual.
-        """
         if previous is not None:
             self.save_current_item_data(previous)
             self.save_timer.stop()
@@ -631,9 +628,6 @@ class PageImageList(QWizardPage):
         self.load_current_item_data()
 
     def load_current_item_data(self) -> None:
-        """
-        Carrega o comentário e a pré-visualização da imagem do item selecionado.
-        """
         current_item = self.list_widget.currentItem()
         if current_item:
             widget = self.list_widget.itemWidget(current_item)
@@ -642,9 +636,8 @@ class PageImageList(QWizardPage):
             self.comment_text.setText(image_data.comment)
             self.comment_text.blockSignals(False)
             try:
-                _, img = get_exif_and_image(image_data.file_path)
-                if img:
-                    base64_thumb, _ = generate_thumbnail_base64(img, max_size=(600, 600))
+                base64_thumb, _ = generate_thumbnail_from_file(image_data.file_path, max_size=(600, 600))
+                if base64_thumb:
                     pixmap = QPixmap()
                     pixmap.loadFromData(base64.b64decode(base64_thumb))
                     self.preview_label.setPixmap(pixmap.scaled(self.preview_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -654,9 +647,6 @@ class PageImageList(QWizardPage):
                 self.preview_label.setText("Erro ao processar imagem.")
 
     def save_current_item_data(self, item: QListWidgetItem) -> None:
-        """
-        Salva os dados atuais do item (comentário).
-        """
         widget = self.list_widget.itemWidget(item)
         image_data = widget.image_data
         text = self.comment_text.toPlainText()
@@ -667,9 +657,6 @@ class PageImageList(QWizardPage):
             widget.lblName.setStyleSheet("")
 
     def save_comment_current(self) -> None:
-        """
-        Salva o comentário do item atual enquanto o usuário digita.
-        """
         current_item = self.list_widget.currentItem()
         if current_item:
             widget = self.list_widget.itemWidget(current_item)
@@ -683,27 +670,15 @@ class PageImageList(QWizardPage):
             self.save_timer.start()
 
     def get_selected_images(self) -> List[str]:
-        """
-        Retorna uma lista dos nomes dos arquivos que estão marcados para inclusão.
-        """
         return [filename for filename, data in self.image_data_map.items() if data.include]
 
     def get_status_dict(self) -> Dict[str, str]:
-        """
-        Retorna um dicionário com o status de cada imagem.
-        """
         return {filename: data.status for filename, data in self.image_data_map.items()}
 
     def get_comment_dict(self) -> Dict[str, str]:
-        """
-        Retorna um dicionário com os comentários de cada imagem.
-        """
         return {filename: data.comment for filename, data in self.image_data_map.items()}
 
     def get_disable_states(self) -> bool:
-        """
-        Retorna True se a função de estados estiver desativada.
-        """
         return self.checkbox_disable_states.isChecked()
 
 
@@ -786,7 +761,6 @@ class PageFinish(QWizardPage):
         report_date = image_page.get_report_date()
         
         # Carrega config p/ obter número do contrato
-        from main import load_config
         config = load_config()
         contract_number = config.get("reference_number", "Contrato Exemplo")
 
@@ -851,7 +825,6 @@ class PageFinish(QWizardPage):
         except ValueError:
             formatted_date_str = datetime.now().strftime('%y%m%d')
 
-        from main import load_config
         config = load_config()
         contract_number = config.get("reference_number", "Contrato Exemplo")
 
@@ -970,7 +943,15 @@ class MyWizard(QWizard):
         """
         image_page: PageImageList = self.page(WizardPage.ImageListPage)
         if image_page:
+            # Salva especificamente o texto que estiver na caixa de edição no momento:
+            current_item = image_page.list_widget.currentItem()
+            if current_item is not None:
+                image_page.save_current_item_data(current_item)
+
+            # Agora salva tudo no arquivo .json
             image_page.save_database()
+
+        # Continua o fechamento normalmente
         event.accept()
 
 

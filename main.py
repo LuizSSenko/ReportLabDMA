@@ -12,6 +12,9 @@ from PIL import Image, ImageOps
 from io import BytesIO
 import base64
 
+# Dicionário global para armazenar as thumbnails geradas
+thumbnail_cache = {}
+
 # Configuração do logger para este módulo
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -223,7 +226,7 @@ def generate_new_filename(index: int, sigla: str, ext: str) -> str:
 
 def generate_thumbnail_base64(
     img: Image.Image,
-    max_size: Tuple[int, int] = (500, 500),
+    max_size: Tuple[int, int] = (600, 600),
     fmt: str = 'JPEG'
 ) -> Tuple[str, Tuple[int, int]]:
     """
@@ -240,79 +243,120 @@ def generate_thumbnail_base64(
         logger.error(f"Erro ao gerar thumbnail: {e}", exc_info=True)
         return "", (0, 0)
 
-def rename_images(directory: Path, selected_images: Optional[List[str]] = None) -> List[str]:
+def generate_thumbnail_from_file(
+    image_file: Path,
+    max_size: Tuple[int, int] = (600, 600),
+    fmt: str = 'JPEG'
+) -> Tuple[str, Tuple[int, int]]:
     """
-    Renomeia os arquivos de imagem no diretório agrupando-os por localização.
-    Essa versão sempre renomeia os arquivos (mesmo que já estejam em formato amigável)
-    para que a ordem final seja determinada pela localização (sigla).
+    Gera a thumbnail para um arquivo de imagem e armazena no cache.
+    Se a thumbnail já foi gerada, ela é retornada diretamente do cache.
+    """
+    key = str(image_file.resolve())
+    if key in thumbnail_cache:
+        return thumbnail_cache[key]
+
+    exif_data, img = get_exif_and_image(image_file)
+    if img is None:
+        return "", (0, 0)
+    
+    base64_thumb, thumb_size = generate_thumbnail_base64(img, max_size, fmt)
+    thumbnail_cache[key] = (base64_thumb, thumb_size)
+    return (base64_thumb, thumb_size)
+
+def rename_images(directory: Path, selected_images=None):
+    """
+    Renomeia os arquivos de imagem no diretório utilizando informações do EXIF e GeoJSON,
+    agrupando-os por sigla.
+    Se o arquivo já possui um nome amigável (ex: "001 - Avatar.jpg"), ele não é renomeado.
     """
     geojson_data = load_geojson()
-    # Obtemos a lista de arquivos de imagem
-    if selected_images is not None:
-        image_files = [directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS]
-    else:
-        image_files = [f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS]
     
-    # Cria uma lista de tuplas (caminho da imagem, sigla)
+    # Obtém a lista de arquivos de imagem
+    if selected_images is not None:
+        image_files = sorted(
+            [directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS]
+        )
+    else:
+        image_files = sorted(
+            [f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS]
+        )
+    
+    renamed_files = []
+    
+    # Separa os arquivos que já estão com nome amigável e os que precisam ser renomeados
+    friendly_files = [f for f in image_files if is_friendly_name(f.name)]
+    non_friendly_files = [f for f in image_files if not is_friendly_name(f.name)]
+    
+    # Para os arquivos com nome amigável, apenas os adicionamos à lista final
+    for f in friendly_files:
+        logging.info(f"Processando imagem: {f.name}...")
+        logging.info(f" -> Já está no formato amigável: {f.name}")
+        renamed_files.append(f.name)
+    
+    # Define o índice inicial a partir dos nomes já amigáveis (se existirem)
+    existing_indices = []
+    for f in friendly_files:
+        match = re.match(r"^(\d{3})\s*-\s*.+\.\w+$", f.name)
+        if match:
+            existing_indices.append(int(match.group(1)))
+    max_index = max(existing_indices) if existing_indices else 0
+    next_index = max_index + 1
+
+    # Cria uma lista de tuplas (arquivo, sigla) para os arquivos que serão renomeados
     items = []
-    for image_file in image_files:
+    for image_file in non_friendly_files:
+        logging.info(f"Processando imagem: {image_file.name}...")
         try:
             exif_data, _ = get_exif_and_image(image_file)
         except Exception as e:
-            logger.error(f"Erro ao ler EXIF de {image_file.name}: {e}", exc_info=True)
+            logging.error(f"Erro ao ler EXIF de {image_file.name}: {e}")
             exif_data = {}
+        
         gps_info = exif_data.get(34853) if exif_data else None
         coordinates, _ = get_coordinates(gps_info)
         if coordinates != "Sem localização":
             try:
                 lat, lon = map(float, coordinates.split(", "))
                 # Busca a quadra e sigla mais próxima
-                _, _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
+                _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
             except Exception as conv_err:
-                logger.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}", exc_info=True)
+                logging.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}")
                 sigla = "Desconhecida"
         else:
             sigla = "Desconhecida"
+        
         if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
             sigla = "Desconhecida"
+        
         items.append((image_file, sigla))
     
-    # Ordena a lista por sigla (em ordem alfabética) e, em caso de empate, pelo nome original
+    # Ordena os itens pela sigla (em ordem alfabética) e, em caso de empate, pelo nome original
     items.sort(key=lambda x: (x[1].upper(), x[0].name))
     
-    # Para evitar conflitos de nomes (se algum arquivo já estiver no formato "NNN - ..."),
-    # vamos primeiro renomear todos para um nome temporário.
-    temp_items = []
+    # Renomeia os arquivos não amigáveis seguindo a ordem definida
     for image_file, sigla in items:
-        temp_name = f"temp_{image_file.name}"
-        temp_path = directory / temp_name
-        try:
-            image_file.rename(temp_path)
-            temp_items.append((temp_path, sigla))
-        except Exception as e:
-            logger.error(f"Erro ao renomear {image_file.name} para temporário: {e}", exc_info=True)
-    
-    # Agora, renomeia os arquivos temporários para o novo nome final, de 001 até n
-    renamed_files: List[str] = []
-    next_index = 1
-    for temp_path, sigla in temp_items:
-        ext = temp_path.suffix
+        ext = image_file.suffix
         new_filename = generate_new_filename(next_index, sigla, ext)
         new_path = directory / new_filename
-        # Se por acaso o novo nome já existir (bem improvável agora), incrementa o índice
+        
+        # Evita conflitos de nomes
         while new_path.exists():
+            logging.warning(f" -> O arquivo {new_filename} já existe. Incrementando o índice.")
             next_index += 1
             new_filename = generate_new_filename(next_index, sigla, ext)
             new_path = directory / new_filename
+        
         try:
-            temp_path.rename(new_path)
-            logger.info(f"Renomeado {temp_path.name} para {new_filename}")
+            image_file.rename(new_path)
+            logging.info(f" -> Renomeado {image_file.name} para {new_filename}")
             renamed_files.append(new_filename)
-        except Exception as e:
-            logger.error(f"Erro ao renomear {temp_path.name} para {new_filename}: {e}", exc_info=True)
-        next_index += 1
-
+            next_index += 1
+        except OSError as os_err:
+            logging.error(f"Erro ao renomear {image_file.name}: {os_err}")
+    
     return renamed_files
+
 
 
 def process_images_with_progress(
@@ -399,7 +443,7 @@ def process_images_with_progress(
 
                     if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
                         sigla = "Desconhecida"
-                    base64_thumb, (thumb_width, thumb_height) = generate_thumbnail_base64(img)
+                    base64_thumb, (thumb_width, thumb_height) = generate_thumbnail_from_file(image_file)
                     html_file.write("<li style='margin-bottom:40px;'>")
                     html_file.write(
                         f"<a href='{image_file.name}' target='_blank'>"
@@ -497,7 +541,8 @@ def collect_entries(
             if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
                 sigla = "Desconhecida"
             
-            base64_thumb, _ = generate_thumbnail_base64(img)
+            base64_thumb, _ = generate_thumbnail_from_file(image_file)
+
             
             description = (
                 f"<strong>{idx:03}</strong><br/>"
