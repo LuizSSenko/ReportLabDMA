@@ -31,3 +31,8 @@
 	- Template editor with preview window.
 	- Output service status table on page 2 and 3.
 		- And if you click on the "Sigla", it warps you to the first occurence in the pdf.
+
+- 18/02/25 - New Features:
+	- Macros: taking text from macros.json, press a number from the keyboard and it'll be automatically commented in the comment section.
+	- New PDF pages: Now the "Estado" of each "Quadra" or "Canteiro" will be printed on a table in the 2nd and 3rd pages.
+		- If a "Quadra" or "Canteiro" has more than one "Estado", it'll be printed the one that appeared more often.
