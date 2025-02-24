@@ -267,8 +267,8 @@ def generate_thumbnail_from_file(
 def rename_images(directory: Path, selected_images=None):
     """
     Renomeia os arquivos de imagem no diretório utilizando informações do EXIF e GeoJSON,
-    agrupando-os por sigla.
-    Se o arquivo já possui um nome amigável (ex: "001 - Avatar.jpg"), ele não é renomeado.
+    agrupando-os por sigla e, dentro de cada grupo, ordenando-os em ordem crescente de data/hora.
+    Se o arquivo já possui um nome amigável (ex: "001 - Descrição.ext"), ele não é renomeado.
     """
     geojson_data = load_geojson()
     
@@ -294,23 +294,14 @@ def rename_images(directory: Path, selected_images=None):
         logging.info(f" -> Já está no formato amigável: {f.name}")
         renamed_files.append(f.name)
     
-    # Define o índice inicial a partir dos nomes já amigáveis (se existirem)
-    existing_indices = []
-    for f in friendly_files:
-        match = re.match(r"^(\d{3})\s*-\s*.+\.\w+$", f.name)
-        if match:
-            existing_indices.append(int(match.group(1)))
-    max_index = max(existing_indices) if existing_indices else 0
-    next_index = max_index + 1
-
-    # Cria uma lista de tuplas (arquivo, sigla) para os arquivos que serão renomeados
+    # Cria uma lista de tuplas (arquivo, sigla, data/hora) para os arquivos que serão renomeados
     items = []
     for image_file in non_friendly_files:
         logging.info(f"Processando imagem: {image_file.name}...")
         try:
             exif_data, _ = get_exif_and_image(image_file)
         except Exception as e:
-            logging.error(f"Erro ao ler EXIF de {image_file.name}: {e}")
+            logging.error(f"Erro ao ler EXIF de {image_file.name}: {e}", exc_info=True)
             exif_data = {}
         
         gps_info = exif_data.get(34853) if exif_data else None
@@ -319,7 +310,7 @@ def rename_images(directory: Path, selected_images=None):
             try:
                 lat, lon = map(float, coordinates.split(", "))
                 # Busca a quadra e sigla mais próxima
-                _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
+                _, _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
             except Exception as conv_err:
                 logging.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}")
                 sigla = "Desconhecida"
@@ -329,33 +320,45 @@ def rename_images(directory: Path, selected_images=None):
         if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
             sigla = "Desconhecida"
         
-        items.append((image_file, sigla))
+        # Extrai a data/hora da imagem; se não conseguir, usa um valor alto para ordená-la por último
+        date_str = extract_image_datetime(image_file)
+        try:
+            capture_dt = datetime.strptime(date_str, "%Y-%m-%d_%H-%M-%S") if date_str else datetime.max
+        except Exception:
+            capture_dt = datetime.max
+
+        items.append((image_file, sigla, capture_dt))
     
-    # Ordena os itens pela sigla (em ordem alfabética) e, em caso de empate, pelo nome original
-    items.sort(key=lambda x: (x[1].upper(), x[0].name))
+    # Ordena os itens pela sigla (para agrupar) e, dentro de cada grupo, pela data/hora (em ordem crescente)
+    items.sort(key=lambda x: (x[1].upper(), x[2]))
     
-    # Renomeia os arquivos não amigáveis seguindo a ordem definida
-    for image_file, sigla in items:
-        ext = image_file.suffix
-        new_filename = generate_new_filename(next_index, sigla, ext)
+    # Utiliza um contador separado para cada sigla
+    sigla_counters = {}
+    for image_file, sigla, _ in items:
+        if sigla not in sigla_counters:
+            sigla_counters[sigla] = 1
+        else:
+            sigla_counters[sigla] += 1
+        new_index = sigla_counters[sigla]
+        new_filename = generate_new_filename(new_index, sigla, image_file.suffix)
         new_path = directory / new_filename
         
-        # Evita conflitos de nomes
+        # Evita conflitos de nomes, incrementando o contador se necessário
         while new_path.exists():
-            logging.warning(f" -> O arquivo {new_filename} já existe. Incrementando o índice.")
-            next_index += 1
-            new_filename = generate_new_filename(next_index, sigla, ext)
+            sigla_counters[sigla] += 1
+            new_index = sigla_counters[sigla]
+            new_filename = generate_new_filename(new_index, sigla, image_file.suffix)
             new_path = directory / new_filename
         
         try:
             image_file.rename(new_path)
             logging.info(f" -> Renomeado {image_file.name} para {new_filename}")
             renamed_files.append(new_filename)
-            next_index += 1
         except OSError as os_err:
             logging.error(f"Erro ao renomear {image_file.name}: {os_err}")
     
     return renamed_files
+
 
 
 
@@ -495,14 +498,35 @@ def collect_entries(
     selected_images: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """
-    Coleta os dados das imagens para geração de relatórios (HTML e PDF).
+    Coleta os dados necessários de cada imagem para a geração de relatórios (HTML e PDF).
+
+    Observações importantes:
+    - Se 'selected_images' for fornecida, ela contém a ordem definida pelo usuário na interface.
+      Por esse motivo, NÃO aplicamos 'sorted()' nessa lista, de modo que a ordem personalizada seja mantida.
+    - Se 'selected_images' não for fornecida, a função coleta todos os arquivos de imagem no diretório
+      (filtrando pelas extensões suportadas) e os ordena (com sorted()) para garantir uma ordem consistente.
+    
+    Para cada imagem, a função realiza os seguintes passos:
+      1. Extrai os dados EXIF e a imagem (usando get_exif_and_image).
+      2. Obtém informações de localização (GPS) e gera um link do Google Maps, além de determinar a área mais próxima
+         a partir de um arquivo GeoJSON.
+      3. Extrai a data e hora de captura da imagem, formatando-a para exibição.
+      4. Gera uma miniatura da imagem (em base64) e a decodifica para os dados binários.
+      5. Constrói uma string 'description' com informações como data/hora, área, sigla, link de localização,
+         status (quando não se tem 'disable_states') e comentários (se existirem).
+      6. Cria um dicionário (entry) com os dados extraídos: imagem, descrição, status, área, sigla e comentários.
+    
+    Em caso de erro durante o processamento de uma imagem, o erro é logado e a imagem é ignorada.
+
+    Retorna:
+      Uma lista de dicionários, onde cada dicionário contém os dados necessários para a geração do relatório.
     """
     if selected_images is not None:
-        image_files = sorted([
+        image_files =[
             directory / f
             for f in selected_images
             if (directory / f).suffix.lower() in IMAGE_EXTENSIONS
-        ])
+        ]
     else:
         image_files = sorted([
             f for f in directory.iterdir()
@@ -570,7 +594,8 @@ def collect_entries(
                 'status': status,
                 'tipo_area': tipo_area,
                 'id_area': id_area,
-                'sigla': sigla
+                'sigla': sigla,
+                'comment': comment  # novo campo para facilitar a agregação
             }
             entries.append(entry)
         except Exception as e:

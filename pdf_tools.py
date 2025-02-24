@@ -14,6 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.enums import TA_LEFT
 from typing import List
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -109,7 +110,7 @@ def draw_header(c, width, height, text_objects):
     """
     Desenha o cabeçalho das páginas subsequentes.
     """
-    y_position = height - 20 * mm
+    y_position = height - 15 * mm
     c.setFont("Helvetica", 12)
     c.drawCentredString(width / 2, y_position, text_objects['section1'])
     y_position -= 6 * mm
@@ -228,6 +229,35 @@ def draw_table(c, x, y, headers, data, col_widths, row_height, sigla_mapping=Non
         col_x += width_i
     c.line(x + table_width, y, x + table_width, y - table_height)
 
+def draw_paginated_table(c, title, headers, data, col_widths, row_height, gap, available_width, sigla_mapping, text_objects, width, height, current_page, total_pages):
+    """
+    Desenha uma tabela paginada, dividindo os dados em blocos de até 30 linhas.
+    Para cada bloco:
+      - Se houver mais de 15 linhas, utiliza draw_split_table (dividindo em duas colunas);
+      - Caso contrário, utiliza draw_table.
+    Desenha o título com a indicação da página.
+    Retorna o número da próxima página.
+    """
+    import math
+    pages_needed = math.ceil(len(data) / 30)
+    margin = 40 * mm  # mesmo valor de margem usado no restante do código
+    for p in range(pages_needed):
+        c.setFont("Helvetica-Bold", 12)
+        if pages_needed > 1:
+            c.drawString(margin, height - 30 * mm, f"{title} - Página {p+1} de {pages_needed}")
+        else:
+            c.drawString(margin, height - 30 * mm, title)
+        table_y = height - 30 * mm - 10 * mm
+        page_data = data[p*30:(p+1)*30]
+        if len(page_data) > 15:
+            draw_split_table(c, margin, table_y, headers, page_data, col_widths, row_height, gap, available_width, sigla_mapping)
+        else:
+            draw_table(c, margin, table_y, headers, page_data, col_widths, row_height, sigla_mapping)
+        draw_footer(c, width, height, text_objects, current_page, total_pages)
+        c.showPage()
+        current_page += 1
+    return current_page
+
 def draw_split_table(c, x, y, headers, data, col_widths, row_height, gap, available_width, sigla_mapping=None):
     """
     Desenha uma tabela dividida em duas colunas lado a lado, cada coluna com até 15 linhas.
@@ -255,12 +285,180 @@ def draw_split_table(c, x, y, headers, data, col_widths, row_height, gap, availa
 # FUNÇÃO QUE CRIA O PDF
 ###############################################
 
-def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config):
+def draw_dynamic_table(
+    c, x, y, headers, data, col_widths, header_style, cell_style,
+    padding=2*mm, bottom_margin=25*mm,
+    footer_drawer=None, page=1, total_pages=1, width=None, height=None, text_objects=None
+):
+    """
+    Desenha uma tabela com células de altura dinâmica (Paragraphs) e faz quebra de página se faltar espaço.
+    Adiciona linhas verticais internas e centraliza as colunas "Quadra", "Sigla" e "Canteiro".
+    """
+
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.lib.styles import ParagraphStyle
+
+    table_width = sum(col_widths)
+    num_cols = len(headers)
+
+    # Definimos um mapeamento de alinhamentos para cada coluna
+    # (ex.: centralizar "Quadra", "Sigla", "Canteiro"; alinhar à esquerda o resto)
+    def get_alignment_for_column(header_text):
+        if header_text in ["Quadra", "Sigla", "Canteiro"]:
+            return TA_CENTER
+        return TA_LEFT
+
+    # -------------------------------------------------------------------------
+    # FUNÇÃO AUXILIAR: DESENHAR O CABEÇALHO
+    # -------------------------------------------------------------------------
+    def draw_header(current_y):
+        """Desenha o cabeçalho da tabela na página atual e retorna sua altura."""
+        # Cria Paragraphs do cabeçalho
+        header_cells = []
+        header_heights = []
+        for i, h in enumerate(headers):
+            # Ajusta o alignment dinamicamente
+            col_alignment = get_alignment_for_column(h)
+            custom_header_style = ParagraphStyle(
+                'CustomHeaderStyle',
+                parent=header_style,
+                alignment=col_alignment  # centraliza se for "Quadra", "Sigla", etc.
+            )
+            para = Paragraph(str(h), custom_header_style)
+            w, h_para = para.wrap(col_widths[i] - 2 * padding, 1000)
+            header_heights.append(h_para + 2 * padding)
+            header_cells.append(para)
+
+        header_height = max(header_heights)
+
+        # Fundo do cabeçalho (cinza claro)
+        c.saveState()
+        c.setFillColorRGB(0.8, 0.8, 0.8)
+        c.rect(x, current_y - header_height, table_width, header_height, fill=1, stroke=0)
+        c.restoreState()
+
+        # Desenha cada célula do cabeçalho
+        curr_x = x
+        for i, para in enumerate(header_cells):
+            para.drawOn(c, curr_x + padding, current_y - header_height + padding)
+            curr_x += col_widths[i]
+
+        # Desenha linhas verticais no cabeçalho
+        row_top = current_y
+        row_bottom = current_y - header_height
+        line_x = x
+        for col_i in range(num_cols + 1):
+            c.line(line_x, row_top, line_x, row_bottom)
+            if col_i < num_cols:
+                line_x += col_widths[col_i]
+
+        # Linha horizontal abaixo do cabeçalho
+        c.line(x, row_bottom, x + table_width, row_bottom)
+
+        return header_height
+
+    # -------------------------------------------------------------------------
+    # VARIÁVEIS DE CONTROLE
+    # -------------------------------------------------------------------------
+    total_drawn_height = 0
+    current_y = y
+    # Desenha o cabeçalho inicialmente
+    header_height = draw_header(current_y)
+    total_drawn_height += header_height
+    current_y -= header_height
+
+    # -------------------------------------------------------------------------
+    # DESENHA AS LINHAS DE DADOS
+    # -------------------------------------------------------------------------
+    for row in data:
+        # Cria Paragraphs e calcula altura
+        cell_paragraphs = []
+        cell_heights = []
+
+        for col_i, cell_text in enumerate(row):
+            col_alignment = get_alignment_for_column(headers[col_i])
+            custom_cell_style = ParagraphStyle(
+                'CustomCellStyle',
+                parent=cell_style,
+                alignment=col_alignment  # centraliza se for "Quadra", "Sigla", etc.
+            )
+            para = Paragraph(str(cell_text).replace('\n', '<br/>'), custom_cell_style)
+            w, h = para.wrap(col_widths[col_i] - 2 * padding, 1000)
+            cell_paragraphs.append(para)
+            cell_heights.append(h + 2 * padding)
+
+        row_height = max(cell_heights)
+
+        # Se não couber na página, faz quebra
+        if current_y - row_height < bottom_margin:
+            # Fecha a borda inferior da tabela na página atual
+            c.rect(x, current_y, table_width, y - current_y, stroke=1, fill=0)
+
+            # Se houver função de rodapé, desenha o rodapé
+            if footer_drawer and width and height and text_objects:
+                footer_drawer(c, width, height, text_objects, page, total_pages)
+
+            c.showPage()
+            page += 1
+
+            # Nova página, redesenha cabeçalho
+            current_y = y
+            header_height = draw_header(current_y)
+            total_drawn_height += header_height
+            current_y -= header_height
+
+        # Desenha conteúdo das células
+        row_top = current_y
+        row_bottom = current_y - row_height
+        curr_x = x
+
+        for col_i, para in enumerate(cell_paragraphs):
+            para.drawOn(c, curr_x + padding, row_bottom + padding)
+            curr_x += col_widths[col_i]
+
+        # Desenha linhas verticais para cada coluna (dentro da linha atual)
+        line_x = x
+        for col_i in range(num_cols + 1):
+            c.line(line_x, row_top, line_x, row_bottom)
+            if col_i < num_cols:
+                line_x += col_widths[col_i]
+
+        # Linha horizontal inferior da linha
+        c.line(x, row_bottom, x + table_width, row_bottom)
+
+        current_y -= row_height
+        total_drawn_height += row_height
+
+    # -------------------------------------------------------------------------
+    # BORDA FINAL DA TABELA NA ÚLTIMA PÁGINA
+    # -------------------------------------------------------------------------
+    c.rect(x, current_y, table_width, y - current_y, stroke=1, fill=0)
+
+    return {
+        'drawn_height': total_drawn_height,
+        'last_page': page
+    }
+
+def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config, general_comments=""):
+    import os
+    import logging
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import Paragraph, Frame
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from pdf_tools import draw_first_page, draw_header, draw_footer, draw_table, draw_split_table, save_temp_image, compute_sigla_first_occurrence, draw_signature_section
+    from pdf_tools import STATUS_COLORS
+
     logging.info(f"Criando PDF em: {pdf_path}")
     c = canvas.Canvas(pdf_path, pagesize=landscape(A4))
     width, height = landscape(A4)
 
-    # Separa os dados para as tabelas com base em 'tipo_area'
+    # -------------------------------------------------------------------------
+    # 1. Separação dos dados para as tabelas de estado (Quadra e Canteiro)
+    # -------------------------------------------------------------------------
     quadra_data = []
     canteiro_data = []
     for entry in entries:
@@ -277,8 +475,8 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
                 entry.get('sigla', 'Desconhecida'),
                 entry.get('status', 'Não Concluído')
             ])
-    # Agrega os registros repetidos
-    def aggregate_data(data_list: List[List[str]]) -> List[List[str]]:
+
+    def aggregate_data(data_list):
         aggregated = {}
         for area, sigla, status in data_list:
             key = (area, sigla)
@@ -294,71 +492,293 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
     aggregated_quadra_data = aggregate_data(quadra_data)
     aggregated_canteiro_data = aggregate_data(canteiro_data)
 
-    # Cálculo do total de páginas:
-    # Página 1: Capa
-    # 1 página para tabela de Quadra (se houver)
-    # 1 página para tabela de Canteiro (se houver)
-    # Páginas para entries (2 por página)
-    # Opcional: página de assinatura
+    # -------------------------------------------------------------------------
+    # 2. Agregação dos comentários por área (sem duplicatas)
+    # -------------------------------------------------------------------------
+    aggregated_comments_quadra = {}
+    aggregated_comments_canteiro = {}
+
+    for entry in entries:
+        comment = entry.get('comment', '').strip()
+        if comment:
+            # Separa o comentário em linhas individuais, removendo espaços extras e linhas vazias
+            lines = [line.strip() for line in comment.splitlines() if line.strip()]
+            area_type = entry.get('tipo_area', '').strip().lower()
+            key = (entry.get('id_area', 'Desconhecida'), entry.get('sigla', 'Desconhecida'))
+            if area_type == 'quadra':
+                # Atualiza o conjunto com as linhas, garantindo que cada linha apareça apenas uma vez
+                aggregated_comments_quadra.setdefault(key, set()).update(lines)
+            elif area_type == 'canteiro':
+                aggregated_comments_canteiro.setdefault(key, set()).update(lines)
+
+    aggregated_comments_quadra_list = [
+        [area, sigla, "\n".join(sorted(comments))]
+        for (area, sigla), comments in aggregated_comments_quadra.items()
+    ]
+    aggregated_comments_canteiro_list = [
+        [area, sigla, "\n".join(sorted(comments))]
+        for (area, sigla), comments in aggregated_comments_canteiro.items()
+    ]
+
+    # -------------------------------------------------------------------------
+    # 3. Cálculo da numeração total de páginas
+    # -------------------------------------------------------------------------
+    disable_states = text_objects.get("disable_states", False)
     table_pages = 0
-    if aggregated_quadra_data:
-        table_pages += 1
-    if aggregated_canteiro_data:
-        table_pages += 1
+    if not disable_states:
+        if aggregated_quadra_data:
+            table_pages += 1
+        if aggregated_canteiro_data:
+            table_pages += 1
+    comment_table_pages = 0
+    if aggregated_comments_quadra_list:
+        comment_table_pages += 1
+    if aggregated_comments_canteiro_list:
+        comment_table_pages += 1
     entry_pages = (len(entries) + 1) // 2
     include_last_page = text_objects.get("include_last_page", False)
-    total_pages = 1 + table_pages + entry_pages + (1 if include_last_page else 0)
+    total_pages = 1 + table_pages + comment_table_pages + entry_pages + (1 if include_last_page else 0)
 
-    # Calcula o mapeamento de siglas para a página de sua primeira ocorrência (para links internos)
-    sigla_to_page = compute_sigla_first_occurrence(entries, table_pages)
+    # Mapeia cada sigla para a página onde aparece pela primeira vez (para links internos)
+    sigla_to_page = compute_sigla_first_occurrence(entries, table_pages + comment_table_pages)
 
     current_page = 1
 
-    # Página 1: Capa (draw_first_page já inclui o footer)
+    # Preparação de estilos para as tabelas dinâmicas
+    sample_styles = getSampleStyleSheet()
+    header_style = ParagraphStyle(
+        'headerStyle',
+        parent=sample_styles['Heading4'],
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        textColor='black'
+    )
+    cell_style = ParagraphStyle(
+        'cellStyle',
+        parent=sample_styles['Normal'],
+        alignment=TA_LEFT,
+        fontName='Helvetica',
+        fontSize=9,
+        leading=11
+    )
+
+    # -------------------------------------------------------------------------
+    # 4. Página 1: Capa
+    # -------------------------------------------------------------------------
     draw_first_page(c, width, height, report_date, config)
     c.showPage()
     current_page += 1
 
-    # Página para tabela de Quadra
-    if aggregated_quadra_data:
+    # -------------------------------------------------------------------------
+    # 5. Tabela: Quadra (se houver)
+    # -------------------------------------------------------------------------
+    if not disable_states and aggregated_quadra_data:
         margin = 40 * mm
         available_width = width - 2 * margin
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(margin, height - 30 * mm, "Tabela: Quadra")
-        table_y = height - 30 * mm - 10 * mm
         headers_quadra = ["Quadra", "Sigla", "Estado"]
         col_widths_quadra = [20 * mm, 50 * mm, 40 * mm]
         row_height = 6 * mm
         gap = 5 * mm
-        # Passa o mapeamento para que a coluna "Sigla" fique clicável
-        if len(aggregated_quadra_data) > 15:
-            draw_split_table(c, margin, table_y, headers_quadra, aggregated_quadra_data, col_widths_quadra, row_height, gap, available_width, sigla_mapping=sigla_to_page)
+        # Se houver mais de 30 registros, usa a função de paginação:
+        if len(aggregated_quadra_data) > 30:
+            current_page = draw_paginated_table(
+                c,
+                "Tabela: Quadra",
+                headers_quadra,
+                aggregated_quadra_data,
+                col_widths_quadra,
+                row_height,
+                gap,
+                available_width,
+                sigla_mapping=sigla_to_page,
+                text_objects=text_objects,
+                width=width,
+                height=height,
+                current_page=current_page,
+                total_pages=total_pages
+            )
         else:
-            draw_table(c, margin, table_y, headers_quadra, aggregated_quadra_data, col_widths_quadra, row_height, sigla_mapping=sigla_to_page)
-        draw_footer(c, width, height, text_objects, current_page, total_pages)
-        c.showPage()
-        current_page += 1
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(margin, height - 30 * mm, "Tabela: Quadra")
+            table_y = height - 30 * mm - 10 * mm
+            if len(aggregated_quadra_data) > 15:
+                draw_split_table(c, margin, table_y, headers_quadra, aggregated_quadra_data, col_widths_quadra, row_height, gap, available_width, sigla_mapping=sigla_to_page)
+            else:
+                draw_table(c, margin, table_y, headers_quadra, aggregated_quadra_data, col_widths_quadra, row_height, sigla_mapping=sigla_to_page)
+            draw_footer(c, width, height, text_objects, current_page, total_pages)
+            c.showPage()
+            current_page += 1
 
-    # Página para tabela de Canteiro
-    if aggregated_canteiro_data:
+    # -------------------------------------------------------------------------
+    # 6. Tabela: Canteiro (se houver)
+    # -------------------------------------------------------------------------
+    if not disable_states and aggregated_canteiro_data:
         margin = 40 * mm
         available_width = width - 2 * margin
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(margin, height - 30 * mm, "Tabela: Canteiro")
-        table_y = height - 30 * mm - 10 * mm
         headers_canteiro = ["Canteiro", "Sigla", "Estado"]
         col_widths_canteiro = [20 * mm, 50 * mm, 40 * mm]
         row_height = 6 * mm
         gap = 5 * mm
-        if len(aggregated_canteiro_data) > 15:
-            draw_split_table(c, margin, table_y, headers_canteiro, aggregated_canteiro_data, col_widths_canteiro, row_height, gap, available_width, sigla_mapping=sigla_to_page)
+        # Se houver mais de 30 registros, utiliza a paginação:
+        if len(aggregated_canteiro_data) > 30:
+            current_page = draw_paginated_table(
+                c,
+                "Tabela: Canteiro",
+                headers_canteiro,
+                aggregated_canteiro_data,
+                col_widths_canteiro,
+                row_height,
+                gap,
+                available_width,
+                sigla_mapping=sigla_to_page,
+                text_objects=text_objects,
+                width=width,
+                height=height,
+                current_page=current_page,
+                total_pages=total_pages
+            )
         else:
-            draw_table(c, margin, table_y, headers_canteiro, aggregated_canteiro_data, col_widths_canteiro, row_height, sigla_mapping=sigla_to_page)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(margin, height - 30 * mm, "Tabela: Canteiro")
+            table_y = height - 30 * mm - 10 * mm
+            if len(aggregated_canteiro_data) > 15:
+                draw_split_table(c, margin, table_y, headers_canteiro, aggregated_canteiro_data, col_widths_canteiro, row_height, gap, available_width, sigla_mapping=sigla_to_page)
+            else:
+                draw_table(c, margin, table_y, headers_canteiro, aggregated_canteiro_data, col_widths_canteiro, row_height, sigla_mapping=sigla_to_page)
+            draw_footer(c, width, height, text_objects, current_page, total_pages)
+            c.showPage()
+            current_page += 1
+
+    # -------------------------------------------------------------------------
+    # 7. Tabela: Comentários das Quadras (se houver) – usando célula dinâmica
+    # -------------------------------------------------------------------------
+    # Tabela: Comentários das Quadras (se houver)
+    if aggregated_comments_quadra_list:
+        margin = 40 * mm
+        available_width = width - 2 * margin
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(margin, height - 30 * mm, "Tabela: Comentários das Quadras")
+        table_y = height - 30 * mm - 10 * mm
+        headers_comments = ["Quadra", "Sigla", "Comentários"]
+        col_widths_comments = [30 * mm, 30 * mm, available_width - 60 * mm]
+        result = draw_dynamic_table(c, margin, table_y, headers_comments, aggregated_comments_quadra_list,
+                                    col_widths_comments, header_style, cell_style,
+                                    bottom_margin=20*mm, padding=2*mm,
+                                    footer_drawer=draw_footer, page=current_page,
+                                    total_pages=total_pages, width=width, height=height, text_objects=text_objects)
+        # Atualiza o número de página usado pela tabela
+        current_page = result['last_page']
+        # Após a tabela, desenha o rodapé na página final da tabela (caso não tenha sido já desenhado)
         draw_footer(c, width, height, text_objects, current_page, total_pages)
         c.showPage()
         current_page += 1
 
-    # Páginas para as entries (2 por página)
+    # -------------------------------------------------------------------------
+    # 8. Tabela: Comentários dos Canteiros (se houver) – usando células dinâmicas
+    # -------------------------------------------------------------------------
+    if aggregated_comments_canteiro_list:
+        margin = 40 * mm
+        available_width = width - 2 * margin
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(margin, height - 30 * mm, "Tabela: Comentários dos Canteiros")
+        table_y = height - 30 * mm - 10 * mm
+        headers_comments = ["Canteiro", "Sigla", "Comentários"]
+        col_widths_comments = [30 * mm, 30 * mm, available_width - 60 * mm]
+        result = draw_dynamic_table(
+            c, margin, table_y, headers_comments, aggregated_comments_canteiro_list,
+            col_widths_comments, header_style, cell_style,
+            bottom_margin=20*mm, padding=2*mm,
+            footer_drawer=draw_footer, page=current_page,
+            total_pages=total_pages, width=width, height=height, text_objects=text_objects
+        )
+        # Atualiza o número da página conforme o retorno da função
+        current_page = result['last_page']
+        # Desenha o rodapé na página final da tabela (caso ainda não tenha sido desenhado)
+        draw_footer(c, width, height, text_objects, current_page, total_pages)
+        c.showPage()
+        current_page += 1
+
+
+    # --- NOVA PÁGINA: Comentários Gerais ---
+    if text_objects.get('general_comments'):
+        margin = 40 * mm
+        bottom_margin = 20 * mm  # Espaço reservado para o rodapé
+
+        # Desenha o título na primeira página de comentários
+        c.setFont("Helvetica-Bold", 16)
+        title_y = height - 30 * mm
+        c.drawCentredString(width / 2, title_y, "Comentários Gerais")
+        
+        # O texto começa, por exemplo, 5 mm abaixo do título
+        current_y = title_y - 5 * mm
+        max_width = width - 2 * margin
+
+        # Estilo sem espaçamento extra entre parágrafos
+        styles = getSampleStyleSheet()
+        general_style = ParagraphStyle(
+            'GeneralComments',
+            parent=styles['Normal'],
+            fontSize=12,
+            leading=14,      # Espaçamento de linha
+            spaceBefore=0,
+            spaceAfter=0
+        )
+
+        # Trata cada quebra de linha como um parágrafo
+        paragraphs = text_objects['general_comments'].split("\n")
+        # Se NÃO quiser ignorar linhas vazias, não filtre por strip()
+        # Caso queira, descomente a linha abaixo:
+        # paragraphs = [p for p in paragraphs]  # sem strip()
+
+        spacing = 2  # Sem espaçamento extra entre parágrafos
+
+        for para_text in paragraphs:
+            # Se o parágrafo possuir espaços iniciais, converte cada espaço para &nbsp;
+            match = re.match(r"^( +)", para_text)
+            if match:
+                leading = match.group(1).replace(" ", "&nbsp;")
+                para_text = leading + para_text[len(match.group(1)):]
+            
+            # Se o parágrafo estiver vazio, substitua por um non-breaking space para manter a altura
+            if para_text == "":
+                para_text = u'\u00A0'
+            
+            para_obj = Paragraph(para_text, general_style)
+            available_space = current_y - bottom_margin
+            w_para, h_para = para_obj.wrap(max_width, available_space)
+            
+            if h_para > available_space:
+                draw_footer(c, width, height, text_objects, current_page, total_pages)
+                c.showPage()
+                current_page += 1
+                current_y = height - bottom_margin
+                available_space = current_y - bottom_margin
+                w_para, h_para = para_obj.wrap(max_width, available_space)
+            
+            para_obj.drawOn(c, margin, current_y - h_para)
+            current_y -= (h_para + spacing)
+            
+            if current_y - bottom_margin < 10 * mm:
+                draw_footer(c, width, height, text_objects, current_page, total_pages)
+                c.showPage()
+                current_page += 1
+                current_y = height - bottom_margin
+
+
+        # Finaliza a última página de comentários desenhando o rodapé
+        draw_footer(c, width, height, text_objects, current_page, total_pages)
+        c.showPage()
+        current_page += 1
+
+
+
+
+
+
+    # -------------------------------------------------------------------------
+    # 9. Páginas de Entries (2 por página)
+    # -------------------------------------------------------------------------
     margin = 40 * mm
     usable_width = width - 2 * margin
     horizontal_spacing = 5 * mm
@@ -369,8 +789,7 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
         draw_header(c, width, height, text_objects)
         # Adiciona bookmarks para a primeira ocorrência de siglas nesta página de entries
         current_entries = entries[i:i+2]
-        # A página de entries tem índice = table_pages + 1 + (i//2)
-        current_page_entries = table_pages + 1 + (i // 2)
+        current_page_entries = table_pages + comment_table_pages + 1 + (i // 2)
         for entry in current_entries:
             sigla = entry.get('sigla')
             if sigla and sigla_to_page.get(sigla) == current_page_entries:
@@ -380,8 +799,8 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
                 break
             entry = entries[i + j]
             x_position = margin if j == 0 else margin + (usable_width / 2) + (horizontal_spacing / 2)
-            y_position = height - 40 * mm
-            description_height = 65 * mm
+            y_position = height - 35 * mm
+            description_height = 70 * mm
             block_height = max_image_height + description_height + 5 * mm
             block_width = (usable_width / 2) - (horizontal_spacing / 2)
             status = entry.get('status', "Não Concluído")
@@ -424,21 +843,27 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
             style.fontSize = 10
             style.alignment = TA_LEFT
             description_text = entry.get('description', '').replace("target='_blank'", "")
+            from reportlab.platypus import Paragraph
             paragraph = Paragraph(description_text, style)
+            from reportlab.platypus import Frame
             frame = Frame(description_x, description_y - description_height, description_width, description_height, showBoundary=0)
             frame.addFromList([paragraph], c)
-        draw_footer(c, width, height, text_objects, table_pages + 1 + (i // 2), total_pages)
+        draw_footer(c, width, height, text_objects, table_pages + comment_table_pages + 1 + (i // 2), total_pages)
         c.showPage()
         current_page += 1
 
-    # Página de assinatura (se selecionada)
+    # -------------------------------------------------------------------------
+    # 10. Página opcional de assinatura
+    # -------------------------------------------------------------------------
     if include_last_page:
         draw_signature_section(c, width, height, text_objects)
         draw_footer(c, width, height, text_objects, current_page, total_pages)
     c.save()
     logging.info("PDF criado com sucesso.")
 
-def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False):
+
+
+def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False, disable_states=False, general_comments=""):
     config = load_pdf_config()
     if not contract_number:
         contract_number = config.get("reference_number", "")
@@ -456,6 +881,11 @@ def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include
         'sign1_name': config.get("sign1_name", ""),
         'sign2': config.get("sign2", "PREPOSTO CONTRATADA"),
         'sign2_name': config.get("sign2_name", "NOME: Laércio P. Oliveira"),
-        'include_last_page': include_last_page
+        'include_last_page': include_last_page,
+        'disable_states': disable_states  # repassa o parâmetro para a criação condicional das páginas de estados
     }
-    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config)
+
+    text_objects['general_comments'] = general_comments if len(general_comments.strip()) > 10 else ""
+
+    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config, general_comments)
+

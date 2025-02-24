@@ -1,4 +1,4 @@
-# ReportLab_DMA.py
+# ReportLab_DMA.py, GUI para processamento de imagens e geração de PDFs.
 import sys
 import os
 import logging
@@ -15,11 +15,11 @@ from typing import Optional, List, Dict
 
 from PyQt5.QtWidgets import (
     QApplication, QWizard, QWizardPage, QLabel, QLineEdit, QWidget,
-    QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QListWidget,
+    QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QListWidget, QDialog,
     QListWidgetItem, QTextEdit, QProgressDialog, QMessageBox, QCheckBox,
     QRadioButton, QButtonGroup, QSizePolicy, QGraphicsOpacityEffect, QSplitter
 )
-from PyQt5.QtCore import Qt, QThreadPool, pyqtSignal, QObject, pyqtSlot, QRunnable, QTimer, QEvent
+from PyQt5.QtCore import Qt, QThreadPool, pyqtSignal, QObject, pyqtSlot, QRunnable, QTimer, QEvent, QEventLoop
 from PyQt5.QtGui import QPixmap
 
 from PIL import Image, ExifTags, ImageOps
@@ -89,6 +89,44 @@ class WorkerSignals(QObject):
     progress = pyqtSignal(int, int)  # current, total
 
 
+class LoadImagesRunnable(QRunnable):
+    """
+    Worker para carregar e pré-processar (EXIF, hash) as imagens do diretório.
+    """
+    def __init__(self, directory: Path, supported_extensions: List[str]) -> None:
+        super().__init__()
+        self.directory = directory
+        self.supported_extensions = supported_extensions
+        self.signals = WorkerSignals()
+        self.image_data_list = []  # Lista de objetos ImageData
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            image_files = sorted([f for f in self.directory.iterdir() if f.suffix.lower() in self.supported_extensions])
+            total = len(image_files)
+            results = []
+            for idx, image_file in enumerate(image_files, start=1):
+                image_data = ImageData(image_file)
+                try:
+                    _, img = get_exif_and_image(image_file)
+                    if img:
+                        image_hash = compute_image_hash(img)
+                        image_data.hash = image_hash
+                    else:
+                        image_data.hash = None
+                except Exception as e:
+                    logger.error(f"Erro ao computar hash para {image_file.name}: {e}", exc_info=True)
+                    image_data.hash = None
+                results.append(image_data)
+                self.signals.progress.emit(idx, total)
+            self.image_data_list = results
+            self.signals.result.emit(results)
+            self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit((e.__class__, e, traceback.format_exc()))
+
+
 class ProcessImagesRunnable(QRunnable):
     """
     Worker para processar imagens em segundo plano.
@@ -124,12 +162,12 @@ class ProcessImagesRunnable(QRunnable):
 
 
 class PDFGenerationRunnable(QRunnable):
-    """
-    Worker para gerar o PDF a partir dos dados processados.
-    """
+    # # #
+    # Worker para gerar o PDF em segundo plano
+    # # #
     def __init__(self, directory: Path, report_date: str, contract_number: str,
                  pdf_path: Path, include_last_page: bool, comments_dict: dict,
-                 status_dict: dict, disable_states: bool, selected_images: list) -> None:
+                 status_dict: dict, disable_states: bool, selected_images: list, general_comments: str) -> None:
         super().__init__()
         self.directory = directory
         self.report_date = report_date
@@ -140,6 +178,7 @@ class PDFGenerationRunnable(QRunnable):
         self.status_dict = status_dict
         self.disable_states = disable_states
         self.selected_images = selected_images
+        self.general_comments = general_comments  # novo parâmetro
         self.signals = WorkerSignals()
 
     @pyqtSlot()
@@ -152,7 +191,36 @@ class PDFGenerationRunnable(QRunnable):
                 disable_states=self.disable_states,
                 selected_images=self.selected_images
             )
-            convert_data_to_pdf(self.report_date, self.contract_number, entries, str(self.pdf_path), self.include_last_page)
+            # Repasse o general_comments para a função de conversão
+            convert_data_to_pdf(
+                self.report_date,
+                self.contract_number,
+                entries,
+                str(self.pdf_path),
+                self.include_last_page,
+                disable_states=self.disable_states,
+                general_comments=self.general_comments
+            )
+            self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit((e.__class__, e, traceback.format_exc()))
+
+
+
+class RenameImagesRunnable(QRunnable):
+    """
+    Worker para renomear as imagens em segundo plano.
+    """
+    def __init__(self, directory: Path) -> None:
+        super().__init__()
+        self.directory = directory
+        self.signals = WorkerSignals()
+        self.renamed_files = None
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            self.renamed_files = rename_images(self.directory)
             self.signals.finished.emit()
         except Exception as e:
             self.signals.error.emit((e.__class__, e, traceback.format_exc()))
@@ -173,6 +241,7 @@ class ImageData:
         self.status: str = "Não Concluído"
         self.comment: str = ""
         self.hash: Optional[str] = None  # Será preenchido com o hash único da imagem
+        self.order: int = 9999  # Valor padrão para a ordem
 
 
 # =============================================================================
@@ -324,21 +393,53 @@ class PageSelectDirectory(QWizardPage):
         QMessageBox.information(self, "Sobre", "Desenvolvido por Luiz Senko - DMA - DAV", QMessageBox.Ok)
 
     def validatePage(self) -> bool:
-        """
-        Valida se o diretório selecionado é válido e tenta renomear os arquivos.
-        """
         dir_path = self.line_edit.text().strip()
         if not dir_path or not Path(dir_path).is_dir():
             QMessageBox.warning(self, "Erro", "Por favor, selecione uma pasta válida contendo imagens.", QMessageBox.Ok)
             return False
+
+        # Cria e exibe o progress dialog logo que o usuário clica em Next
+        progress_dialog = QProgressDialog("Aguarde...", None, 0, 0, self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.show()
+        QApplication.processEvents()  # Garante que a interface seja atualizada
+
         directory = Path(dir_path)
-        try:
-            renamed_files = rename_images(directory)
-            if not renamed_files:
-                QMessageBox.warning(self, "Aviso", "Nenhum arquivo foi renomeado.", QMessageBox.Ok)
-        except Exception as e:
-            QMessageBox.critical(self, "Erro ao Renomear", f"Ocorreu um erro ao renomear os arquivos: {e}", QMessageBox.Ok)
+
+        # Usa um QEventLoop para aguardar o término do worker sem bloquear a atualização da UI
+        loop = QEventLoop()
+        result_container = {}
+
+        def on_finished():
+            result_container['renamed_files'] = worker.renamed_files
+            loop.quit()
+
+        def on_error(error_info):
+            QMessageBox.critical(self, "Erro ao Renomear", f"Ocorreu um erro ao renomear os arquivos: {error_info[1]}", QMessageBox.Ok)
+            loop.quit()
+
+        worker = RenameImagesRunnable(directory)
+        worker.signals.finished.connect(on_finished)
+        worker.signals.error.connect(on_error)
+        QThreadPool.globalInstance().start(worker)
+        loop.exec_()
+
+        progress_dialog.close()
+
+        renamed_files = result_container.get('renamed_files', None)
+        if renamed_files is None:
             return False
+        if not renamed_files:
+            QMessageBox.warning(self, "Aviso", "Nenhum arquivo foi renomeado.", QMessageBox.Ok)
+        # Armazena no wizard para depois fechar na próxima página
+        self.wizard().folder_progress_dialog = None
+        # Deixa o botão Next em bold
+        next_button = self.wizard().button(QWizard.NextButton)
+        if next_button:
+            font = next_button.font()
+            font.setBold(True)
+            next_button.setFont(font)
         return True
 
     def nextId(self) -> int:
@@ -362,10 +463,14 @@ class PageImageList(QWizardPage):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         
-        header_container = QVBoxLayout()
+        header_container = QHBoxLayout()
         self.edit_template_button = QPushButton("Editar template")
-        self.edit_template_button.clicked.connect(self.open_template_editor) 
+        self.edit_template_button.clicked.connect(self.open_template_editor)
         header_container.addWidget(self.edit_template_button)
+        
+        self.general_comments_button = QPushButton("Comentários Gerais")
+        self.general_comments_button.clicked.connect(self.open_general_comments)
+        header_container.addWidget(self.general_comments_button)
         
         date_layout = QHBoxLayout()
         date_label = QLabel("Data do Relatório:")
@@ -391,6 +496,8 @@ class PageImageList(QWizardPage):
         self.list_widget = QListWidget()
         self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.list_widget)
+
+        self.list_widget.setDragDropMode(QListWidget.InternalMove)
         
         self.comment_label = QLabel("Comentário:")
         left_layout.addWidget(self.comment_label)
@@ -431,7 +538,10 @@ class PageImageList(QWizardPage):
         # Instala o event filter para capturar eventos de teclado e foco
         self.installEventFilter(self)
         self.comment_text.installEventFilter(self)
+        self.comment_text.installEventFilter(self)
+        self.comment_text.viewport().installEventFilter(self)
         self.waiting_macro_insertion = False
+    
 
     def validatePage(self) -> bool:
         from datetime import datetime
@@ -450,6 +560,14 @@ class PageImageList(QWizardPage):
 
     def nextId(self) -> int:
         return WizardPage.FinishPage
+    
+    def open_general_comments(self):
+        dialog = GeneralCommentsDialog(self)
+        # Se houver comentário geral já salvo, preenche o diálogo
+        if hasattr(self, "general_comments_text") and self.general_comments_text:
+            dialog.text_edit.setPlainText(self.general_comments_text)
+        if dialog.exec_() == QDialog.Accepted:
+            self.general_comments_text = dialog.get_text()
 
     def open_template_editor(self):
         dialog = TemplateEditorDialog(self)
@@ -482,37 +600,33 @@ class PageImageList(QWizardPage):
         self.list_widget.clear()
         self.image_data_map.clear()
 
-        image_files = sorted([f for f in directory.iterdir() if f.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS])
-        for image_file in image_files:
-            image_data = ImageData(image_file)
-            try:
-                _, img = get_exif_and_image(image_file)
-                if img:
-                    image_hash = compute_image_hash(img)
-                    image_data.hash = image_hash
-                else:
-                    image_data.hash = None
-            except Exception as e:
-                logger.error(f"Erro ao computar hash para {image_file.name}: {e}", exc_info=True)
-                image_data.hash = None
-            self.image_data_map[image_data.filename] = image_data
-            widget = ImageStatusItemWidget(image_data)
-            # Conecta o clique do nome da imagem para ativar o modo de macro
-            widget.lblName.clicked.connect(self.set_comment_focus)
-            item = QListWidgetItem()
-            item.setSizeHint(widget.sizeHint())
-            self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, widget)
+        # Cria um progress dialog para o carregamento das imagens
+        progress_dialog = QProgressDialog("Carregando imagens...", None, 0, 0, self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.show()
+        QApplication.processEvents()
 
-        self.load_database()
-
-        # Se houver pelo menos uma imagem, selecionamos a primeira
-        # E já deixamos o modo de macros ativo, sem precisar clicar no nome.
-        if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(0)
-            self.load_current_item_data()
-            # Ativa o "modo macro" automaticamente
-            self.set_comment_focus()
+        # Cria o worker para carregar e pré-processar as imagens
+        worker = LoadImagesRunnable(directory, SUPPORTED_IMAGE_EXTENSIONS)
+        worker.signals.progress.connect(lambda current, total: progress_dialog.setLabelText(f"Carregando imagens... {current}/{total}"))
+        def on_result(results):
+            for image_data in results:
+                self.image_data_map[image_data.filename] = image_data
+                widget = ImageStatusItemWidget(image_data)
+                widget.lblName.clicked.connect(self.set_comment_focus)
+                item = QListWidgetItem()
+                item.setSizeHint(widget.sizeHint())
+                self.list_widget.addItem(item)
+                self.list_widget.setItemWidget(item, widget)
+            self.load_database()
+            if self.list_widget.count() > 0:
+                self.list_widget.setCurrentRow(0)
+                self.load_current_item_data()
+                self.set_comment_focus()
+        worker.signals.result.connect(on_result)
+        worker.signals.finished.connect(progress_dialog.close)
+        QThreadPool.globalInstance().start(worker)
 
     def set_comment_focus(self) -> None:
         self.waiting_macro_insertion = True
@@ -546,22 +660,20 @@ class PageImageList(QWizardPage):
                     QMessageBox.warning(self, "Erro", f"Não foi possível carregar o arquivo macros.json: {e}", QMessageBox.Ok)
                     macros = {}
                 macro_text = macros.get(macro_key, "")
-                current_text = self.comment_text.toPlainText()
-                new_text = current_text + macro_text + "\n"
-                self.comment_text.setText(new_text)
+                cursor = self.comment_text.textCursor()
+                cursor.insertText(macro_text)
+                cursor.insertBlock()  # Insere uma nova linha
+
                 event.accept()
                 return  # Não propaga o evento
         super().keyPressEvent(event)
 
-
     def eventFilter(self, obj, event):
-        # Se o usuário clicar na caixa de comentários, desativa o modo macro
-        if obj == self.comment_text and event.type() == QEvent.MouseButtonPress:
+        # Se o usuário clicar na caixa de comentários ou no seu viewport, desativa o modo macro
+        if (obj == self.comment_text or obj == self.comment_text.viewport()) and event.type() == QEvent.MouseButtonPress:
             self.waiting_macro_insertion = False
-            self.comment_text.setStyleSheet("")
+            self.comment_text.setStyleSheet("")  # Remove o fundo amarelo
         return super().eventFilter(obj, event)
-
-
 
     def load_database(self) -> None:
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
@@ -620,6 +732,8 @@ class PageImageList(QWizardPage):
         except Exception as e:
             logger.error(f"Erro ao salvar banco de dados: {e}", exc_info=True)
 
+
+
     def on_item_changed(self, current: QListWidgetItem, previous: Optional[QListWidgetItem]) -> None:
         if previous is not None:
             self.save_current_item_data(previous)
@@ -662,6 +776,9 @@ class PageImageList(QWizardPage):
             widget = self.list_widget.itemWidget(current_item)
             image_data = widget.image_data
             text = self.comment_text.toPlainText()
+            
+
+
             image_data.comment = text
             if text.strip():
                 widget.lblName.setStyleSheet("background-color: lightgreen;")
@@ -670,7 +787,13 @@ class PageImageList(QWizardPage):
             self.save_timer.start()
 
     def get_selected_images(self) -> List[str]:
-        return [filename for filename, data in self.image_data_map.items() if data.include]
+        selected_images = []
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            widget = self.list_widget.itemWidget(item)
+            if widget.image_data.include:
+                selected_images.append(widget.image_data.filename)
+        return selected_images
 
     def get_status_dict(self) -> Dict[str, str]:
         return {filename: data.status for filename, data in self.image_data_map.items()}
@@ -681,7 +804,33 @@ class PageImageList(QWizardPage):
     def get_disable_states(self) -> bool:
         return self.checkbox_disable_states.isChecked()
 
-
+class GeneralCommentsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Comentários Gerais")
+        self.resize(800, 600)
+        layout = QVBoxLayout(self)
+        
+        self.text_edit = QTextEdit(self)
+        layout.addWidget(self.text_edit)
+        
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Salvar", self)
+        self.close_button = QPushButton("Fechar", self)
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.close_button)
+        layout.addLayout(button_layout)
+        
+        self.save_button.clicked.connect(self.on_save)
+        self.close_button.clicked.connect(self.reject)
+    
+    def on_save(self):
+        # Simplesmente aceita o diálogo; o método get_text() retornará o conteúdo
+        self.accept()
+    
+    def get_text(self):
+        return self.text_edit.toPlainText()
+    
 # =============================================================================
 # Página 3: Concluir e Geração de PDF
 # =============================================================================
@@ -776,7 +925,7 @@ class PageFinish(QWizardPage):
         worker.signals.error.connect(self.on_processing_error)
         self.threadpool.start(worker)
 
-        self.progress_dialog = QProgressDialog("Processando imagens e gerando HTML...", None, 0, 100, self)
+        self.progress_dialog = QProgressDialog("Processando imagens e gerando o relatório...", None, 0, 100, self)
         self.progress_dialog.setWindowTitle("Aguarde")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setCancelButton(None)
@@ -837,11 +986,15 @@ class PageFinish(QWizardPage):
         status_dict = image_page.get_status_dict()
         disable_states = image_page.get_disable_states()
         selected_images = image_page.get_selected_images()
+        
+        # Obtém o comentário geral (caso exista)
+        general_comments = getattr(image_page, "general_comments_text", "")
 
+        # Cria o worker com o parâmetro general_comments já incluído
         worker = PDFGenerationRunnable(
             directory, user_date_str, contract_number, pdf_path,
             include_signature, comments_dict, status_dict,
-            disable_states, selected_images
+            disable_states, selected_images, general_comments
         )
         worker.signals.finished.connect(self.on_pdf_finished)
         worker.signals.error.connect(self.on_pdf_error)
@@ -916,9 +1069,18 @@ class MyWizard(QWizard):
         self.currentIdChanged.connect(self.on_current_id_changed)
 
     def on_current_id_changed(self, current_id: int) -> None:
-        """
-        Ajusta o tamanho da janela conforme a página atual e a centraliza.
-        """
+        # Se a nova página for a de imagens, fecha o progress dialog e restaura o botão Next
+        if current_id == WizardPage.ImageListPage:
+            if hasattr(self, "folder_progress_dialog") and self.folder_progress_dialog:
+                self.folder_progress_dialog.close()
+                self.folder_progress_dialog = None
+            next_button = self.button(QWizard.NextButton)
+            if next_button:
+                font = next_button.font()
+                font.setBold(False)
+                next_button.setFont(font)
+                
+        # Ajusta o tamanho da janela conforme a página
         if current_id == WizardPage.ImageListPage:
             self.resize(*self.image_list_page_size)
         else:
@@ -938,21 +1100,19 @@ class MyWizard(QWizard):
             self.move(frame_geometry.topLeft())
 
     def closeEvent(self, event) -> None:
-        """
-        Ao fechar o Wizard, garante que os dados sejam salvos.
-        """
         image_page: PageImageList = self.page(WizardPage.ImageListPage)
         if image_page:
-            # Salva especificamente o texto que estiver na caixa de edição no momento:
             current_item = image_page.list_widget.currentItem()
             if current_item is not None:
                 image_page.save_current_item_data(current_item)
-
-            # Agora salva tudo no arquivo .json
             image_page.save_database()
-
-        # Continua o fechamento normalmente
+        try:
+            # Tenta esperar que as threads do QThreadPool finalizem (aguarda no máximo 1 segundo)
+            QThreadPool.globalInstance().waitForDone(1000)
+        except Exception as e:
+            logger.error("Erro ao aguardar threads finalizarem: %s", e, exc_info=True)
         event.accept()
+
 
 
 # =============================================================================
