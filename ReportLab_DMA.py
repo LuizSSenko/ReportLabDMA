@@ -568,6 +568,7 @@ class PageImageList(QWizardPage):
             dialog.text_edit.setPlainText(self.general_comments_text)
         if dialog.exec_() == QDialog.Accepted:
             self.general_comments_text = dialog.get_text()
+            self.save_database()  # Salva imediatamente os comentários gerais no JSON
 
     def open_template_editor(self):
         dialog = TemplateEditorDialog(self)
@@ -610,20 +611,56 @@ class PageImageList(QWizardPage):
         # Cria o worker para carregar e pré-processar as imagens
         worker = LoadImagesRunnable(directory, SUPPORTED_IMAGE_EXTENSIONS)
         worker.signals.progress.connect(lambda current, total: progress_dialog.setLabelText(f"Carregando imagens... {current}/{total}"))
+
         def on_result(results):
+            # Lê o arquivo JSON completo para recuperar os dados salvos
+            db_path = directory / "imagens_db.json"
+            images_db = {}
+            if db_path.exists():
+                try:
+                    with open(db_path, "r", encoding="utf-8") as f:
+                        db_full = json.load(f)
+                    # Extrai os dados das imagens, comentários gerais e estado do checkbox
+                    images_db = db_full.get("images", {})
+                    self.general_comments_text = db_full.get("general_comments", "")
+                    disable_states = db_full.get("disable_states", False)
+                    self.checkbox_disable_states.setChecked(disable_states)
+                except Exception as e:
+                    logger.error(f"Erro ao carregar banco de dados: {e}", exc_info=True)
+
+            # Atualiza os dados de cada imagem com as informações do JSON e define a ordem
+            for image_data in results:
+                if image_data.hash and image_data.hash in images_db:
+                    saved = images_db[image_data.hash]
+                    image_data.comment = saved.get("comment", "")
+                    image_data.status = saved.get("status", "Não Concluído")
+                    image_data.include = saved.get("include", True)
+                    image_data.order = saved.get("order", 9999)
+                else:
+                    image_data.order = 9999
+
+            # Ordena os resultados com base no campo 'order'
+            results.sort(key=lambda img: img.order)
+
+            # Cria os itens na QListWidget na ordem correta e atualiza o estilo se houver comentário
             for image_data in results:
                 self.image_data_map[image_data.filename] = image_data
                 widget = ImageStatusItemWidget(image_data)
+                if image_data.comment.strip():
+                    widget.lblName.setStyleSheet("background-color: lightgreen;")
+                else:
+                    widget.lblName.setStyleSheet("")
                 widget.lblName.clicked.connect(self.set_comment_focus)
                 item = QListWidgetItem()
                 item.setSizeHint(widget.sizeHint())
                 self.list_widget.addItem(item)
                 self.list_widget.setItemWidget(item, widget)
-            self.load_database()
+
             if self.list_widget.count() > 0:
                 self.list_widget.setCurrentRow(0)
                 self.load_current_item_data()
                 self.set_comment_focus()
+
         worker.signals.result.connect(on_result)
         worker.signals.finished.connect(progress_dialog.close)
         QThreadPool.globalInstance().start(worker)
@@ -678,23 +715,36 @@ class PageImageList(QWizardPage):
     def load_database(self) -> None:
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
         db_path = Path(directory_text) / "imagens_db.json"
+        images_db = {}
         if db_path.exists():
             try:
                 with open(db_path, "r", encoding="utf-8") as f:
-                    db = json.load(f)
+                    db_full = json.load(f)
             except Exception as e:
                 logger.error(f"Erro ao carregar banco de dados: {e}", exc_info=True)
-                db = {}
-        else:
-            db = {}
+                db_full = {}
+            # Se o JSON possui a estrutura nova com chave "images"
+            if "images" in db_full:
+                images_db = db_full.get("images", {})
+                # Carrega os comentários gerais e o estado do checkbox
+                self.general_comments_text = db_full.get("general_comments", "")
+                disable_states = db_full.get("disable_states", False)
+                self.checkbox_disable_states.setChecked(disable_states)
+            else:
+                images_db = db_full
 
+        # Atualiza os dados de cada imagem com as informações do JSON e define a ordem
         for image_data in self.image_data_map.values():
-            if image_data.hash and image_data.hash in db:
-                saved = db[image_data.hash]
+            if image_data.hash and image_data.hash in images_db:
+                saved = images_db[image_data.hash]
                 image_data.comment = saved.get("comment", "")
                 image_data.status = saved.get("status", "Não Concluído")
                 image_data.include = saved.get("include", True)
+                image_data.order = saved.get("order", 9999)
+            else:
+                image_data.order = 9999
 
+        # Atualiza o estado visual dos widgets na lista
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             widget = self.list_widget.itemWidget(item)
@@ -714,23 +764,41 @@ class PageImageList(QWizardPage):
             else:
                 widget.lblName.setStyleSheet("")
 
+
     def save_database(self) -> None:
         directory_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
         db_path = Path(directory_text) / "imagens_db.json"
-        db = {}
+        
+        # Atualiza o atributo 'order' de cada imagem conforme a posição na GUI
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            widget = self.list_widget.itemWidget(item)
+            widget.image_data.order = index + 1
+
+        images_db = {}
         for image_data in self.image_data_map.values():
             if image_data.hash:
-                db[image_data.hash] = {
+                images_db[image_data.hash] = {
                     "comment": image_data.comment,
                     "status": image_data.status,
-                    "include": image_data.include
+                    "include": image_data.include,
+                    "order": image_data.order
                 }
+        
+        # Cria o dicionário completo com as informações das imagens, comentários gerais e o estado do checkbox
+        db_full = {
+            "images": images_db,
+            "general_comments": getattr(self, "general_comments_text", ""),
+            "disable_states": self.checkbox_disable_states.isChecked()
+        }
         try:
             with open(db_path, "w", encoding="utf-8") as f:
-                json.dump(db, f, ensure_ascii=False, indent=4)
+                json.dump(db_full, f, ensure_ascii=False, indent=4)
             logger.info("Banco de dados salvo com sucesso.")
         except Exception as e:
             logger.error(f"Erro ao salvar banco de dados: {e}", exc_info=True)
+
+
 
 
 

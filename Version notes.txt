@@ -37,4 +37,3 @@
 	- New "Comentários Gerais" section, with infinite pages.
 		- If user write more than 10 characters, the page is created, if not... well, not.
 	- User can reorder images on GUI, and it'll appear reordered in the PDF.
-	- OBS: For now, the order is not saved in the JSON. Work in progress.
