@@ -175,7 +175,7 @@ def generate_html_report(
                     html_file.write("Sem localização")
 
                 # Exibe o status da imagem, se a exibição não estiver desabilitada
-                default_status = "Não Concluído"
+                default_status = "Não Iniciado"
                 status = status_dict.get(image_file.name, default_status) if status_dict is not None else default_status
                 if not disable_states:
                     html_file.write(f"<br/><strong>Estado:</strong> {status}<br/>")
@@ -343,7 +343,7 @@ def collect_entries(
                 f"<strong>Localização:</strong> <a href='{gmaps_link}' target='_blank'>{gmaps_link}</a><br/>"
             )
             
-            default_status = "Não Concluído"
+            default_status = "Não Iniciado"
             status = status_dict.get(image_file.name, default_status)
             if not disable_states:
                 description += f"<strong>Estado:</strong> {status}<br/>"
@@ -396,7 +396,7 @@ def load_image_status_db(directory: Path) -> Dict[str, str]:
                     if img:
                         image_hash = compute_image_hash(img)
                         if image_hash and image_hash in db:
-                            status_dict[file.name] = db[image_hash].get("status", "Não Concluído")
+                            status_dict[file.name] = db[image_hash].get("status", "Não Iniciado")
         except Exception as e:
             logger.error(f"Erro ao carregar o banco de dados: {e}", exc_info=True)
     return status_dict

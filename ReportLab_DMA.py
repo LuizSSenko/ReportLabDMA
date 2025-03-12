@@ -262,7 +262,7 @@ class ImageData:
         self.file_path: Path = file_path            # Caminho completo do arquivo
         self.filename: str = file_path.name         # Nome do arquivo
         self.include: bool = True                   # Flag para inclusão no processamento
-        self.status: str = "Não Concluído"          # Status inicial da imagem
+        self.status: str = "Não Iniciado"          # Status inicial da imagem
         self.comment: str = ""                      # Comentário associado à imagem
         self.hash: Optional[str] = None             # Hash único (será calculado posteriormente)
         self.order: int = 9999                      # Ordem de exibição (valor alto por padrão)
@@ -295,7 +295,7 @@ class ImageStatusItemWidget(QWidget):
     Contém:
       - Checkbox para indicar se a imagem deve ser incluída.
       - Rótulo clicável exibindo o nome da imagem.
-      - Botões de rádio para definir o status: "Concluído", "Parcial" ou "Não Concluído".
+      - Botões de rádio para definir o status: "Concluído", "Parcial" ou "Não Iniciado".
     """
     def __init__(self, image_data: ImageData, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -308,6 +308,9 @@ class ImageStatusItemWidget(QWidget):
         self.chkInclude.setChecked(self.image_data.include)
         layout.addWidget(self.chkInclude, 0)
 
+        # Chama o método para atualizar o efeito visual de acordo com o estado atual
+        self.onIncludeChanged(self.chkInclude.checkState())
+
         # Cria o rótulo clicável para o nome da imagem
         self.lblName = ClickableLabel(self.image_data.filename)
         self.lblName.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -316,7 +319,7 @@ class ImageStatusItemWidget(QWidget):
         # Cria os botões de rádio para seleção do status
         self.rbConcluido = QRadioButton("Concluído")
         self.rbParcial = QRadioButton("Parcial")
-        self.rbNao = QRadioButton("Não Concluído")
+        self.rbNao = QRadioButton("Não Iniciado")
 
         # Define o botão de rádio padrão conforme o status armazenado
         if self.image_data.status == "Concluído":
@@ -340,7 +343,7 @@ class ImageStatusItemWidget(QWidget):
         self.chkInclude.stateChanged.connect(self.onIncludeChanged)
         self.rbConcluido.toggled.connect(functools.partial(self.onStatusChanged, status="Concluído"))
         self.rbParcial.toggled.connect(functools.partial(self.onStatusChanged, status="Parcial"))
-        self.rbNao.toggled.connect(functools.partial(self.onStatusChanged, status="Não Concluído"))
+        self.rbNao.toggled.connect(functools.partial(self.onStatusChanged, status="Não Iniciado"))
 
     def onIncludeChanged(self, state: int) -> None:
         """
@@ -490,6 +493,36 @@ class PageSelectDirectory(QWizardPage):
 
 
 # =============================================================================
+# Classe para QLabel Redimensionável
+# =============================================================================
+
+class ResizableLabel(QLabel):
+    """
+    QLabel que redimensiona automaticamente seu pixmap conforme seu tamanho.
+    """
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._pixmap = None
+
+    def setPixmap(self, pixmap: QPixmap):
+        """
+        Armazena o pixmap original e o exibe escalonado para o tamanho atual.
+        """
+        self._pixmap = pixmap
+        if self._pixmap:
+            super().setPixmap(self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            super().setPixmap(pixmap)
+    
+    def resizeEvent(self, event):
+        """
+        No redimensionamento, reaplica o escalonamento do pixmap.
+        """
+        if self._pixmap:
+            super().setPixmap(self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        super().resizeEvent(event)
+
+# =============================================================================
 # Página 2: Lista de Imagens, Comentários e Pré-visualização
 # =============================================================================
 
@@ -549,7 +582,7 @@ class PageImageList(QWizardPage):
         header_layout.addWidget(QLabel("Nome da Imagem"), 3)
         header_layout.addWidget(QLabel("Concluído"), 1)
         header_layout.addWidget(QLabel("Parcial"), 1)
-        header_layout.addWidget(QLabel("Não Concluído"), 1)
+        header_layout.addWidget(QLabel("Não Iniciado"), 1)
         left_layout.addLayout(header_layout)
         
         # Cria o QListWidget para exibir a lista de imagens
@@ -571,7 +604,7 @@ class PageImageList(QWizardPage):
         # Área de pré-visualização (thumbnail) da imagem selecionada
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        self.preview_label = QLabel("Miniatura da Imagem")
+        self.preview_label = ResizableLabel("Miniatura da Imagem")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.preview_label.setStyleSheet("border: 1px solid black;")
@@ -713,6 +746,9 @@ class PageImageList(QWizardPage):
         def on_result(results):
             # Tenta carregar o arquivo JSON com os dados salvos
             db_path = directory / "imagens_db.json"
+
+            disable_states = False
+            
             images_db = {}
             if db_path.exists():
                 try:
@@ -742,7 +778,7 @@ class PageImageList(QWizardPage):
                 if image_data.hash and image_data.hash in images_db:
                     saved = images_db[image_data.hash]
                     image_data.comment = saved.get("comment", "")
-                    image_data.status = saved.get("status", "Não Concluído")
+                    image_data.status = saved.get("status", "Não Iniciado")
                     image_data.include = saved.get("include", True)
                     image_data.order = saved.get("order", 9999)
                 else:
@@ -867,7 +903,7 @@ class PageImageList(QWizardPage):
             if image_data.hash and image_data.hash in images_db:
                 saved = images_db[image_data.hash]
                 image_data.comment = saved.get("comment", "")
-                image_data.status = saved.get("status", "Não Concluído")
+                image_data.status = saved.get("status", "Não Iniciado")
                 image_data.include = saved.get("include", True)
                 image_data.order = saved.get("order", 9999)
             else:
@@ -960,11 +996,12 @@ class PageImageList(QWizardPage):
             self.comment_text.setText(image_data.comment)
             self.comment_text.blockSignals(False)
             try:
-                base64_thumb, _ = generate_thumbnail_from_file(image_data.file_path, max_size=(600, 600))
+                base64_thumb, _ = generate_thumbnail_from_file(image_data.file_path, max_size=(1200, 1200)) 
                 if base64_thumb:
                     pixmap = QPixmap()
                     pixmap.loadFromData(base64.b64decode(base64_thumb))
-                    self.preview_label.setPixmap(pixmap.scaled(self.preview_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    # Passa o pixmap original para a ResizableLabel
+                    self.preview_label.setPixmap(pixmap)
                 else:
                     self.preview_label.setText("Erro ao carregar imagem.")
             except Exception as e:
@@ -1312,6 +1349,7 @@ class MyWizard(QWizard):
         self.default_size = (800, 600)
         self.image_list_page_size = (1200, 700)
         self.resize(*self.default_size)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Cria as páginas do Wizard
         page1 = PageSelectDirectory()
@@ -1337,13 +1375,7 @@ class MyWizard(QWizard):
                 font = next_button.font()
                 font.setBold(False)
                 next_button.setFont(font)
-                
-        # Ajusta o tamanho da janela conforme a página atual
-        if current_id == WizardPage.ImageListPage:
-            self.resize(*self.image_list_page_size)
-        else:
-            self.resize(*self.default_size)
-        self.center()
+
 
     def center(self) -> None:
         """
@@ -1388,7 +1420,7 @@ def run_gui() -> None:
     """
     app = QApplication(sys.argv)
     wizard = MyWizard()
-    wizard.show()
+    wizard.showMaximized()  # Maximiza a janela
     sys.exit(app.exec_())
 
 # =============================================================================

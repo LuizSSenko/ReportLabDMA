@@ -13,6 +13,8 @@ from PIL import Image, ImageOps
 from io import BytesIO
 import base64
 from req_classes.settingsClass import Settings  # Importa a classe de configuração
+import random  # Importado para gerar nomes aleatórios
+
 
 
 # -----------------------------------------------------------------------------
@@ -362,26 +364,29 @@ IMAGE_EXTENSIONS: List[str] = [".jpg", ".jpeg", ".png", ".heic"]
 
 def rename_images(directory: Path, selected_images=None):
     """
-    Renomeia os arquivos de imagem no diretório com base em informações extraídas dos metadados e do GeoJSON.
+    Renomeia os arquivos de imagem no diretório com base em informações dos metadados e do GeoJSON.
     
-    O processo:
-      - Obtém todos os arquivos de imagem (ou somente os selecionados);
-      - Separa os arquivos que já possuem um nome amigável dos que precisam ser renomeados;
-      - Para os arquivos não amigáveis, extrai os metadados (EXIF, GPS) para identificar a área e sigla;
-      - Extrai a data/hora da imagem para ordenar os arquivos dentro de cada grupo;
-      - Gera um novo nome no formato "Índice - SIGLA.ext", garantindo que não haja conflitos de nomes;
-      - Renomeia os arquivos e retorna uma lista com os novos nomes.
-
-    Args:
-        directory (Path): Diretório contendo as imagens.
-        selected_images (optional): Lista de nomes de arquivos a serem renomeados. Se None, utiliza todas as imagens.
-
-    Returns:
+    Primeiro, renomeia todos os arquivos (com extensões válidas) para um nome aleatório de 8 dígitos.
+    Depois, renomeia os arquivos para o formato "Índice - SIGLA.ext" usando os metadados EXIF e dados do GeoJSON.
+    
+    Retorna:
         List[str]: Lista dos nomes dos arquivos renomeados.
     """
-    geojson_data = load_geojson()
+    # Passo 1: Renomeação aleatória para evitar conflitos
+    all_image_files = [f for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS]
+    for image_file in all_image_files:
+        random_name = ''.join(random.choices("0123456789", k=8)) + image_file.suffix.lower()
+        new_path = directory / random_name
+        while new_path.exists():
+            random_name = ''.join(random.choices("0123456789", k=8)) + image_file.suffix.lower()
+            new_path = directory / random_name
+        try:
+            image_file.rename(new_path)
+            logger.info(f"Arquivo {image_file.name} renomeado aleatoriamente para {new_path.name}")
+        except Exception as e:
+            logger.error(f"Erro ao renomear {image_file.name} para nome aleatório: {e}", exc_info=True)
     
-    # Obtém a lista de arquivos de imagem a partir do diretório ou dos selecionados
+    # Passo 2: Renomeação final com índice e sigla
     if selected_images is not None:
         image_files = sorted(
             [directory / f for f in selected_images if (directory / f).suffix.lower() in IMAGE_EXTENSIONS]
@@ -392,25 +397,15 @@ def rename_images(directory: Path, selected_images=None):
         )
     
     renamed_files = []
-    
-    # Separa os arquivos que já estão com nome amigável dos que precisam ser renomeados
-    friendly_files = [f for f in image_files if is_friendly_name(f.name)]
-    non_friendly_files = [f for f in image_files if not is_friendly_name(f.name)]
-    
-    # Para arquivos já amigáveis, apenas adiciona o nome à lista final
-    for f in friendly_files:
-        logging.info(f"Processando imagem: {f.name}...")
-        logging.info(f" -> Já está no formato amigável: {f.name}")
-        renamed_files.append(f.name)
-    
-    # Cria uma lista de tuplas contendo (arquivo, sigla, data/hora) para os arquivos a renomear
     items = []
-    for image_file in non_friendly_files:
-        logging.info(f"Processando imagem: {image_file.name}...")
+    geojson_data = load_geojson()
+    
+    for image_file in image_files:
+        logger.info(f"Processando imagem: {image_file.name}...")
         try:
             exif_data, _ = get_exif_and_image(image_file)
         except Exception as e:
-            logging.error(f"Erro ao ler EXIF de {image_file.name}: {e}", exc_info=True)
+            logger.error(f"Erro ao ler EXIF de {image_file.name}: {e}", exc_info=True)
             exif_data = {}
         
         gps_info = exif_data.get(34853) if exif_data else None
@@ -418,10 +413,9 @@ def rename_images(directory: Path, selected_images=None):
         if coordinates != "Sem localização":
             try:
                 lat, lon = map(float, coordinates.split(", "))
-                # Busca a área e sigla mais próxima com base nas coordenadas
                 _, _, sigla, _ = find_nearest_geometry(geojson_data['features'], lat, lon)
             except Exception as conv_err:
-                logging.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}")
+                logger.error(f"Erro ao converter coordenadas de {image_file.name}: {conv_err}")
                 sigla = "Desconhecida"
         else:
             sigla = "Desconhecida"
@@ -429,41 +423,30 @@ def rename_images(directory: Path, selected_images=None):
         if not sigla or sigla.lower() in ["sem sigla", "desconhecida"]:
             sigla = "Desconhecida"
         
-        # Extrai a data/hora da imagem; se não conseguir, utiliza uma data máxima para ordenação posterior
         date_str = extract_image_datetime(image_file)
         try:
             capture_dt = datetime.strptime(date_str, "%Y-%m-%d_%H-%M-%S") if date_str else datetime.max
         except Exception:
             capture_dt = datetime.max
-
+        
         items.append((image_file, sigla, capture_dt))
     
-    # Ordena os itens pela sigla (para agrupar) e, dentro de cada grupo, pela data/hora (ordem crescente)
     items.sort(key=lambda x: (x[1].upper(), x[2]))
     
-    # Inicializa um contador para cada sigla para determinar o índice no novo nome
-    sigla_counters = {}
+    counter = 1
     for image_file, sigla, _ in items:
-        if sigla not in sigla_counters:
-            sigla_counters[sigla] = 1
-        else:
-            sigla_counters[sigla] += 1
-        new_index = sigla_counters[sigla]
-        new_filename = generate_new_filename(new_index, sigla, image_file.suffix)
+        new_filename = generate_new_filename(counter, sigla, image_file.suffix)
         new_path = directory / new_filename
-        
-        # Verifica conflitos de nomes e ajusta o índice se necessário
         while new_path.exists():
-            sigla_counters[sigla] += 1
-            new_index = sigla_counters[sigla]
-            new_filename = generate_new_filename(new_index, sigla, image_file.suffix)
+            counter += 1
+            new_filename = generate_new_filename(counter, sigla, image_file.suffix)
             new_path = directory / new_filename
-        
         try:
             image_file.rename(new_path)
-            logging.info(f" -> Renomeado {image_file.name} para {new_filename}")
+            logger.info(f" -> Renomeado {image_file.name} para {new_filename}")
             renamed_files.append(new_filename)
         except OSError as os_err:
-            logging.error(f"Erro ao renomear {image_file.name}: {os_err}")
+            logger.error(f"Erro ao renomear {image_file.name}: {os_err}")
+        counter += 1
     
     return renamed_files
