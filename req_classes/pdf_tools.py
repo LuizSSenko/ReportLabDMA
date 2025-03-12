@@ -35,7 +35,7 @@ logging.basicConfig(
 STATUS_COLORS = {
     "Concluído": (0.90, 1.0, 0.90),      # verde claro
     "Parcial": (1.0, 1.0, 0.85),         # amarelo claro
-    "Não Concluído": (1.0, 0.90, 0.90)    # vermelho claro
+    "Não Iniciado": (1.0, 0.90, 0.90)    # vermelho claro
 }
 
 def save_temp_image(image_data):
@@ -48,10 +48,9 @@ def save_temp_image(image_data):
     Retorna:
       - Caminho do arquivo temporário criado.
     """
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-        # Abre a imagem a partir dos dados binários e a salva em formato PNG
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
         img = Image.open(BytesIO(image_data))
-        img.save(temp_file, format='PNG')
+        img.save(temp_file, format='JPEG', quality=80)  # você pode ajustar a qualidade se desejar
         temp_file_path = temp_file.name
     logging.debug(f"Saved temporary image: {temp_file_path}")
     return temp_file_path
@@ -516,13 +515,13 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
             quadra_data.append([
                 entry.get('id_area', 'Desconhecida'),
                 entry.get('sigla', 'Desconhecida'),
-                entry.get('status', 'Não Concluído')
+                entry.get('status', 'Não Iniciado')
             ])
         elif tipo == "canteiro":
             canteiro_data.append([
                 entry.get('id_area', 'Desconhecida'),
                 entry.get('sigla', 'Desconhecida'),
-                entry.get('status', 'Não Concluído')
+                entry.get('status', 'Não Iniciado')
             ])
 
     def aggregate_data(data_list):
@@ -543,7 +542,9 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
         return result
 
     aggregated_quadra_data = aggregate_data(quadra_data)
+    aggregated_quadra_data.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
     aggregated_canteiro_data = aggregate_data(canteiro_data)
+    aggregated_canteiro_data.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
 
     # -------------------------------------------------------------------------
     # 2. Agrega os comentários por área (removendo duplicatas)
@@ -568,10 +569,14 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
         [area, sigla, "\n".join(sorted(comments))]
         for (area, sigla), comments in aggregated_comments_quadra.items()
     ]
+    aggregated_comments_quadra_list.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
+
     aggregated_comments_canteiro_list = [
         [area, sigla, "\n".join(sorted(comments))]
         for (area, sigla), comments in aggregated_comments_canteiro.items()
     ]
+    aggregated_comments_canteiro_list.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
+
 
     # -------------------------------------------------------------------------
     # 3. Cálculo da numeração total de páginas
@@ -830,11 +835,11 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
     # -------------------------------------------------------------------------
     # 9. Páginas de Entries (2 por página)
     # -------------------------------------------------------------------------
-    margin = 40 * mm
+    margin = 20 * mm
     usable_width = width - 2 * margin
     horizontal_spacing = 5 * mm
     max_image_width = (usable_width / 2) - 5 * mm
-    max_image_height = 76 * mm
+    max_image_height = 75 * mm
 
     for i in range(0, len(entries), 2):
         draw_header(c, width, height, text_objects)
@@ -854,7 +859,7 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
             description_height = 70 * mm
             block_height = max_image_height + description_height + 5 * mm
             block_width = (usable_width / 2) - (horizontal_spacing / 2)
-            status = entry.get('status', "Não Concluído")
+            status = entry.get('status', "Não Iniciado")
             color = STATUS_COLORS.get(status, (1, 1, 1))
             block_x = x_position - 2 * mm
             block_y = y_position - block_height - 2 * mm
