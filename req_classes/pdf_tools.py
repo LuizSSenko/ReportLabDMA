@@ -10,12 +10,14 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from PIL import Image
 from io import BytesIO
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Paragraph, Frame
 from reportlab.lib.enums import TA_LEFT
 from typing import List
 import re
 from req_classes.settingsClass import Settings
+
+
 
 # Cria a instância de configurações e carrega o arquivo de configuração
 settings = Settings()
@@ -38,6 +40,49 @@ STATUS_COLORS = {
     "Não Iniciado": (1.0, 0.90, 0.90)    # vermelho claro
 }
 
+# Obtenha o diretório do módulo para construir os caminhos absolutos
+THIS_DIR = os.path.dirname(__file__)
+LOGO_LEFT = os.path.join(THIS_DIR, "Logo_001.png")
+LOGO_RIGHT = os.path.join(THIS_DIR, "Logo_002.png")
+
+# Defina os tamanhos desejados para cada logo (altura em pontos)
+LOGO_LEFT_HEIGHT = 14 * mm  # por exemplo, 14 mm para o logo da esquerda
+LOGO_RIGHT_HEIGHT = 22 * mm  # por exemplo, 20 mm para o logo da direita
+
+
+
+def draw_logos(c, width, left_logo_top_y, right_logo_top_y,
+               left_logo_height=LOGO_LEFT_HEIGHT, right_logo_height=LOGO_RIGHT_HEIGHT,
+               left_logo_path=LOGO_LEFT, right_logo_path=LOGO_RIGHT,
+               left_offset=25*mm, right_offset=50*mm):
+    """
+    Desenha os logotipos utilizando os offsets informados.
+    - left_offset: margem esquerda para o logo da esquerda.
+    - right_offset: margem direita (distância entre o lado direito da página e o logo da direita).
+    """
+    try:
+        left_img = Image.open(left_logo_path)
+        left_logo_width = left_logo_height * left_img.size[0] / left_img.size[1]
+    except Exception as e:
+        left_logo_width = left_logo_height
+
+    try:
+        right_img = Image.open(right_logo_path)
+        right_logo_width = right_logo_height * right_img.size[0] / right_img.size[1]
+    except Exception as e:
+        right_logo_width = right_logo_height
+
+    left_x = left_offset
+    right_x = width - right_logo_width - right_offset
+
+    left_y = left_logo_top_y - left_logo_height
+    right_y = right_logo_top_y - right_logo_height
+
+    c.drawImage(left_logo_path, left_x, left_y, width=left_logo_width, height=left_logo_height,
+                preserveAspectRatio=True, mask='auto')
+    c.drawImage(right_logo_path, right_x, right_y, width=right_logo_width, height=right_logo_height,
+                preserveAspectRatio=True, mask='auto')
+    
 def save_temp_image(image_data):
     """
     Salva os dados binários de uma imagem em um arquivo temporário no formato PNG e retorna o caminho do arquivo.
@@ -65,6 +110,17 @@ def draw_first_page(c, width, height, report_date, config):
       - report_date: data do relatório a ser exibida.
       - config: dicionário de configurações com textos para cabeçalho, título, rodapé, etc.
     """
+
+    # Antes de desenhar o texto, desenha os logotipos.
+    # Define os topos dos logotipos
+    left_top = height - 30 * mm
+    right_top = height - 24 * mm
+
+    # Chama draw_logos com offsets maiores (para evitar que os logos fiquem sobre o texto)
+    draw_logos(c, width, left_logo_top_y=left_top, right_logo_top_y=right_top,
+               left_logo_height=LOGO_LEFT_HEIGHT, right_logo_height=LOGO_RIGHT_HEIGHT,
+               left_offset=15*mm, right_offset=40*mm)
+
     # Cabeçalho principal
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(width / 2, height - 30 * mm, config["header_1"])
@@ -95,6 +151,15 @@ def draw_header(c, width, height, text_objects):
       - width, height: dimensões da página.
       - text_objects: dicionário contendo textos para as seções do cabeçalho (ex.: section1, section2, section3).
     """
+    # Define os topos dos logotipos para as demais páginas
+    left_top = height - 10 * mm
+    right_top = height - 10 * mm
+
+    # Aqui usamos os offsets padrão (ou outros que desejar)
+    draw_logos(c, width, left_logo_top_y=left_top, right_logo_top_y=right_top,
+               left_logo_height=LOGO_LEFT_HEIGHT, right_logo_height=LOGO_RIGHT_HEIGHT,
+               left_offset=25*mm, right_offset=50*mm)
+    
     y_position = height - 15 * mm
     c.setFont("Helvetica", 12)
     c.drawCentredString(width / 2, y_position, text_objects['section1'])
@@ -475,7 +540,105 @@ def draw_dynamic_table(
         'last_page': page
     }
 
-def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config, general_comments=""):
+def draw_questionario_section(c, width, height, responses, text_objects, current_page, total_pages, questionario_config=None, bottom_margin=20*mm):
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import Paragraph
+    styles = getSampleStyleSheet()
+    qa_style = ParagraphStyle(
+        'QAStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14  # espaçamento entre linhas
+    )
+    margin = 40 * mm
+    available_width = width - 2 * margin
+    spacing = 4  # espaço entre parágrafos
+
+    # Constrói um dicionário que mapeia o texto da pergunta (em minúsculo) para o valor booleano de "color_inverted"
+    questions_inverted = {}
+    if questionario_config is not None:
+        for q in questionario_config:
+            key = q.get("text", "").strip().lower()
+            questions_inverted[key] = q.get("color_inverted", False)
+    
+    # Desenha o título na primeira página da seção
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width/2, height - 30*mm, "Questionário de Poda")
+    current_y = height - 40*mm  # posição logo abaixo do título
+
+    for question, answer in responses.items():
+        question_norm = question.strip().lower()
+        # Recupera o valor de "color_inverted" para essa pergunta (default False)
+        color_inverted = questions_inverted.get(question_norm, False)
+        if isinstance(answer, dict):
+            resposta = answer.get("resposta", "").strip().lower()
+            text = f"<b>{question}</b><br/>Resposta: {answer.get('resposta','')}"
+            if "justificativa" in answer:
+                justificativa = answer.get("justificativa", "").strip()
+                if justificativa:
+                    justificativa_formatada = justificativa.replace("\n", "<br/>")
+                    # Exibe "Justificativa:" sublinhado em linha separada
+                    text += f"<br/><u>Justificativa:</u><br/>{justificativa_formatada}"
+            # Aplica a lógica de cores conforme o valor de color_inverted
+            if color_inverted:
+                if resposta == "sim":
+                    bg_color = (1.0, 0.90, 0.90)  # vermelho claro
+                elif resposta in ["não", "nao"]:
+                    bg_color = (0.90, 1.0, 0.90)  # verde claro
+                else:
+                    bg_color = None
+            else:
+                if resposta == "sim":
+                    bg_color = (0.90, 1.0, 0.90)  # verde claro
+                elif resposta in ["não", "nao"]:
+                    bg_color = (1.0, 0.90, 0.90)  # vermelho claro
+                else:
+                    bg_color = None
+        else:
+            # Perguntas do tipo texto – aqui, aplicamos uma lógica especial para "Nome do encarregado:".
+            text = f"<b>{question}</b> {answer}"
+            resposta = answer.strip().lower()
+            if question.strip().lower().startswith("nome do encarregado"):
+                if resposta:
+                    bg_color = (0.90, 1.0, 0.90)  # verde, se houver texto
+                else:
+                    bg_color = (1.0, 0.90, 0.90)  # vermelho, se vazio
+            else:
+                bg_color = None
+
+        para = Paragraph(text, qa_style)
+        w_para, h_para = para.wrap(available_width, current_y - bottom_margin)
+        
+        # Se não há espaço suficiente na página para o parágrafo, desenha o rodapé, finaliza a página e reinicia
+        if current_y - h_para < bottom_margin:
+            draw_footer(c, width, height, text_objects, current_page, total_pages)
+            c.showPage()
+            current_page += 1
+            c.setFont("Helvetica-Bold", 16)
+            c.drawCentredString(width/2, height - 30*mm, "Questionário de Poda")
+            current_y = height - 40*mm
+            w_para, h_para = para.wrap(available_width, current_y - bottom_margin)
+        
+        if bg_color is not None:
+            c.saveState()
+            c.setFillColorRGB(*bg_color)
+            c.rect(margin, current_y - h_para, available_width, h_para, fill=1, stroke=0)
+            c.restoreState()
+        
+        para.drawOn(c, margin, current_y - h_para)
+        current_y -= (h_para + spacing)
+    
+    # Desenha o rodapé na última página da seção do questionário e finaliza a página
+    draw_footer(c, width, height, text_objects, current_page, total_pages)
+    c.showPage()
+    current_page += 1
+    return current_page
+
+
+
+
+
+def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config, general_comments="", questionario_responses=None):
     """
     Cria o arquivo PDF utilizando os dados fornecidos.
     
@@ -527,19 +690,29 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
     def aggregate_data(data_list):
         """
         Agrupa os dados por área e sigla, contando as ocorrências de cada status.
-        Em seguida, determina o status majoritário para cada agrupamento.
+        Aplica a regra: se houver qualquer 'Parcial' para uma mesma quadra, o estado final é 'Parcial'.
+        Caso contrário, escolhe o estado que aparece com maior frequência.
         """
         aggregated = {}
         for area, sigla, status in data_list:
             key = (area, sigla)
-            if key not in aggregated:
-                aggregated[key] = {}
+            aggregated.setdefault(key, {})
             aggregated[key][status] = aggregated[key].get(status, 0) + 1
+
         result = []
-        for key, status_counts in aggregated.items():
-            majority_state = max(status_counts.items(), key=lambda x: x[1])[0]
-            result.append([key[0], key[1], majority_state])
+        for (area, sigla), status_counts in aggregated.items():
+            # Regra personalizada: qualquer 'Parcial' prevalece
+            if status_counts.get("Parcial", 0) > 0:
+                final_state = "Parcial"
+            else:
+                # segue o critério original de maioria
+                final_state = max(status_counts.items(), key=lambda x: x[1])[0]
+            result.append([area, sigla, final_state])
+
+        # ordena pelo número da quadra (se possível) ou alfabeticamente
+        result.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
         return result
+
 
     aggregated_quadra_data = aggregate_data(quadra_data)
     aggregated_quadra_data.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
@@ -821,11 +994,20 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
                 current_page += 1
                 current_y = height - bottom_margin
 
+            # Desenha o rodapé na última página de comentários gerais
+            draw_footer(c, width, height, text_objects, current_page, total_pages)
+            c.showPage()
+            current_page += 1
 
-        # Desenha o rodapé na última página de comentários gerais
-        draw_footer(c, width, height, text_objects, current_page, total_pages)
-        c.showPage()
-        current_page += 1
+    
+    if questionario_responses:
+        # Draw title on current page without immediately breaking the page:
+        c.setFont("Helvetica-Bold", 16)
+        c.drawCentredString(width/2, height - 30 * mm, "Questionário de Poda")
+        # Optionally adjust available vertical space or add spacing before responses
+        current_page = draw_questionario_section(c, width, height, questionario_responses, text_objects, current_page, total_pages)
+        # When draw_questionario_section finishes, it already drew the footer on its last page.
+
 
 
 
@@ -919,25 +1101,13 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
 
 
 
-def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False, disable_states=False, general_comments="", disable_comments_table=False):
-    """
-    Função principal que converte os dados fornecidos em um PDF.
-    
-    Parâmetros:
-      - report_date: data do relatório.
-      - contract_number: número do contrato.
-      - entries: lista de registros com os dados de cada imagem/área.
-      - pdf_path: caminho para salvar o PDF.
-      - include_last_page: flag para incluir a página de assinatura.
-      - disable_states: flag para desabilitar as tabelas de estados.
-      - general_comments: comentários gerais a serem incluídos.
-      - disable_comments_table: flag para desabilitar as tabelas de comentários.
-    """
+def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False,
+                          disable_states=False, general_comments="", questionario_respostas=None, 
+                          disable_comments_table=False):
     settings = Settings()
     config = settings.config
     if not contract_number:
         contract_number = config.get("reference_number", "")
-    # Cria o dicionário de textos utilizado nas diversas seções do PDF
     text_objects = {
         'section1': config["header_1"],
         'section2': config["header_2"],
@@ -953,13 +1123,12 @@ def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include
         'sign2': config["sign2"],
         'sign2_name': config["sign2_name"],
         'include_last_page': include_last_page,
-        'disable_states': disable_states,                   # repassa o parâmetro para criar condicionalmente as páginas de estados
-        'disable_comments_table': disable_comments_table    # repassa o estado para desabilitar as tabelas de comentários
+        'disable_states': disable_states,
+        'disable_comments_table': disable_comments_table
     }
-
-     # Se os comentários gerais tiverem mais de 10 caracteres, são incluídos; caso contrário, fica vazio
     text_objects['general_comments'] = general_comments if len(general_comments.strip()) > 10 else ""
+    
+    # Passe as respostas do questionário para que sejam usadas na criação do PDF
+    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config, general_comments, questionario_respostas)
 
-    # Chama a função que efetivamente cria o PDF com os dados processados
-    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config, general_comments)
 

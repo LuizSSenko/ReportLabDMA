@@ -291,10 +291,10 @@ def find_nearest_geometry(features: List[Dict[str, Any]], lat: float, lon: float
                 props = feature.get('properties', {})
                 if 'Quadra' in props and props['Quadra']:
                     tipo_area = "Quadra"
-                    id_area = props['Quadra']
+                    id_area   = str(props['Quadra'])
                 elif 'Canteiro' in props and props['Canteiro']:
                     tipo_area = "Canteiro"
-                    id_area = props['Canteiro']
+                    id_area   = str(props['Canteiro'])
                 else:
                     tipo_area = "Desconhecida"
                     id_area = "Desconhecida"

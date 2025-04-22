@@ -37,12 +37,13 @@ from utils import (
     generate_thumbnail_from_file,
     compute_image_hash,
     rename_images,
-    load_config
+    load_config, load_geojson
 )
 
 # Importa funções para conversão de dados em PDF e editor de configurações
 from req_classes.pdf_tools import convert_data_to_pdf
 from req_classes.configEditor import ConfigEditorDialog
+from req_classes.questionario_poda import QuestionarioPodaDialog
 
 # =============================================================================
 # Configuração do logger para este módulo
@@ -178,9 +179,9 @@ class PDFGenerationRunnable(QRunnable):
     Reúne os dados processados e chama a função de conversão para PDF.
     """
     def __init__(self, directory: Path, report_date: str, contract_number: str,
-                 pdf_path: Path, include_last_page: bool, comments_dict: dict,
-                 status_dict: dict, disable_states: bool, selected_images: list, 
-                 general_comments: str, disable_comments_table: bool) -> None:
+                pdf_path: Path, include_last_page: bool, comments_dict: dict,
+                status_dict: dict, disable_states: bool, selected_images: list, 
+                general_comments: str, questionario_respostas: dict, disable_comments_table: bool) -> None:
         super().__init__()
         self.directory = directory
         self.report_date = report_date
@@ -192,8 +193,10 @@ class PDFGenerationRunnable(QRunnable):
         self.disable_states = disable_states
         self.selected_images = selected_images
         self.general_comments = general_comments
-        self.disable_comments_table = disable_comments_table  # Flag para desabilitar tabela de comentários
+        self.questionario_respostas = questionario_respostas  # Novo atributo
+        self.disable_comments_table = disable_comments_table
         self.signals = WorkerSignals()
+
 
     @pyqtSlot()
     def run(self) -> None:
@@ -218,7 +221,8 @@ class PDFGenerationRunnable(QRunnable):
                 self.include_last_page,
                 disable_states=self.disable_states,
                 general_comments=self.general_comments,
-                disable_comments_table=self.disable_comments_table  # repassando o valor
+                questionario_respostas=self.questionario_respostas,  # Parâmetro adicional
+                disable_comments_table=self.disable_comments_table,  # Novo parâmetro
             )
             self.signals.finished.emit()
         except Exception as e:
@@ -551,6 +555,10 @@ class PageImageList(QWizardPage):
         self.general_comments_button.clicked.connect(self.open_general_comments)
         header_container.addWidget(self.general_comments_button)
         
+        self.questionario_poda_button = QPushButton("Questionário de Poda")
+        self.questionario_poda_button.clicked.connect(self.open_questionario_poda)
+        header_container.addWidget(self.questionario_poda_button)
+
         date_layout = QHBoxLayout()
         date_label = QLabel("Data do Relatório:")
         # Preenche o campo com a data atual
@@ -683,6 +691,17 @@ class PageImageList(QWizardPage):
                                     "Configurações Atualizadas", 
                                     "As configurações foram atualizadas com sucesso.", 
                                     QMessageBox.Ok)
+    
+    def open_questionario_poda(self):
+        dialog = QuestionarioPodaDialog(self)
+        # Se já houver respostas salvas, pré-carregue-as no diálogo
+        if hasattr(self, "questionario_respostas"):
+            dialog.set_answers(self.questionario_respostas)
+        if dialog.exec_() == QDialog.Accepted:
+            self.questionario_respostas = dialog.get_answers()
+        else:
+            # Se o usuário cancelar, opcionalmente não atualiza o valor
+            pass
 
     def get_report_date(self) -> str:
         """
@@ -760,6 +779,8 @@ class PageImageList(QWizardPage):
                     disable_states = db_full.get("disable_states", False)
                     self.checkbox_disable_states.setChecked(disable_states)
                     self.on_disable_states_toggled(disable_states)
+                    # Recupera as respostas do questionário, se houver
+                    self.questionario_respostas = db_full.get("questionario_respostas", {})
                     # NOVO: Recupera o estado do toggle_all_items
                     toggle_state = db_full.get("toggle_all_items", True)
                     self.header_toggle_checkbox.setChecked(toggle_state)
@@ -961,7 +982,8 @@ class PageImageList(QWizardPage):
             "disable_states": self.checkbox_disable_states.isChecked(),
             "toggle_all_items": self.header_toggle_checkbox.isChecked(),
             "report_date": self.report_date_line_edit.text().strip(),
-            "disable_comments_table": self.checkbox_disable_comments.isChecked()  # NOVO
+            "disable_comments_table": self.checkbox_disable_comments.isChecked(),
+            "questionario_respostas": getattr(self, "questionario_respostas", {})  # Nova chave
         }
         try:
             with open(db_path, "w", encoding="utf-8") as f:
@@ -1282,8 +1304,11 @@ class PageFinish(QWizardPage):
         worker = PDFGenerationRunnable(
             directory, user_date_str, contract_number, pdf_path,
             include_signature, comments_dict, status_dict,
-            disable_states, selected_images, general_comments,
-            disable_comments_table  # passando o novo parâmetro
+            disable_states, selected_images,
+            general_comments,
+            # Add the new parameter below:
+            getattr(image_page, "questionario_respostas", {}),
+            disable_comments_table  # passing the new parameter
         )
         worker.signals.finished.connect(self.on_pdf_finished)
         worker.signals.error.connect(self.on_pdf_error)

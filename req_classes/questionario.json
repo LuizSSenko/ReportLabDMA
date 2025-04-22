@@ -1,0 +1,135 @@
+[
+    {
+        "text": "Utilização de EPI (item 12.12 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Utilização de EPC (item 12.12 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Equipamento de motosserra pequeno, para poda de galharia, presente e conforme? (Item 12.17.a do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Equipamento de motosserra grande, para grandes diâmetros de madeira, presente e conforme? (Item 12.17.b do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Equipamento motopoda do tipo telescópica, para podas altas, presente e conforme? (Item 12.17.c do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Caminhão munck está conforme? (Item 12.3 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Veículo para acondicionamento e transporte de resíduos está presente e conforme? (Item 12.17.f do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Triturador de galhos está presente e conforme? (Item 12.11 e 12.17.e do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "A técnica de poda de árvore e galhos foi adequada? (Item 12.9 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "A árvore ficou equilibrada após a poda? (Item 12.6 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Triturador de galhos presente? (Item 12.11 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "A área ficou limpa após a execução do serviço?",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Encarregado presente e atuante durante toda a execução dos serviços?",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Nome do encarregado:",
+        "type": "text",
+        "color_inverted": false
+    },
+    {
+        "text": "As toras com mais de 15cm, foram cortadas em seções com menos de 2m de comprimento? (Item 12.14.1 do contrato)",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Não",
+        "default": "Sim",
+        "color_inverted": false
+    },
+    {
+        "text": "Houve alguma ocorrência de danos ao patrimônio?",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Sim",
+        "default": "Não",
+        "color_inverted": true
+    },
+    {
+        "text": "Houve quebra de algum equipamento utilizado?",
+        "type": "radio",
+        "requires_justification": true,
+        "justify_on": "Sim",
+        "default": "Não",
+        "color_inverted": true
+    }
+]
