@@ -540,9 +540,10 @@ def draw_dynamic_table(
         'last_page': page
     }
 
-def draw_questionario_section(c, width, height, responses, text_objects, current_page, total_pages, questionario_config=None, bottom_margin=20*mm):
+def draw_questionario_section(c, width, height, responses, text_objects, current_page, total_pages, bottom_margin=20*mm):
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import Paragraph
+
     styles = getSampleStyleSheet()
     qa_style = ParagraphStyle(
         'QAStyle',
@@ -550,95 +551,83 @@ def draw_questionario_section(c, width, height, responses, text_objects, current
         fontSize=10,
         leading=14  # espaçamento entre linhas
     )
+
     margin = 40 * mm
     available_width = width - 2 * margin
     spacing = 4  # espaço entre parágrafos
 
-    # Constrói um dicionário que mapeia o texto da pergunta (em minúsculo) para o valor booleano de "color_inverted"
-    questions_inverted = {}
-    if questionario_config is not None:
-        for q in questionario_config:
-            key = q.get("text", "").strip().lower()
-            questions_inverted[key] = q.get("color_inverted", False)
-    
-    # Desenha o título na primeira página da seção
+    # Perguntas cuja cor deve ser invertida
+    inverted_questions = {
+        "houve quebra de algum equipamento utilizado?",
+        "houve alguma ocorrência de danos ao patrimônio?"
+    }
+
+    # Título do questionário
     c.setFont("Helvetica-Bold", 16)
     c.drawCentredString(width/2, height - 30*mm, "Questionário de Poda")
-    current_y = height - 40*mm  # posição logo abaixo do título
+    current_y = height - 40*mm
 
     for question, answer in responses.items():
-        question_norm = question.strip().lower()
-        # Recupera o valor de "color_inverted" para essa pergunta (default False)
-        color_inverted = questions_inverted.get(question_norm, False)
-        if isinstance(answer, dict):
-            resposta = answer.get("resposta", "").strip().lower()
-            text = f"<b>{question}</b><br/>Resposta: {answer.get('resposta','')}"
-            if "justificativa" in answer:
-                justificativa = answer.get("justificativa", "").strip()
-                if justificativa:
-                    justificativa_formatada = justificativa.replace("\n", "<br/>")
-                    # Exibe "Justificativa:" sublinhado em linha separada
-                    text += f"<br/><u>Justificativa:</u><br/>{justificativa_formatada}"
-            # Aplica a lógica de cores conforme o valor de color_inverted
-            if color_inverted:
-                if resposta == "sim":
-                    bg_color = (1.0, 0.90, 0.90)  # vermelho claro
-                elif resposta in ["não", "nao"]:
-                    bg_color = (0.90, 1.0, 0.90)  # verde claro
-                else:
-                    bg_color = None
-            else:
-                if resposta == "sim":
-                    bg_color = (0.90, 1.0, 0.90)  # verde claro
-                elif resposta in ["não", "nao"]:
-                    bg_color = (1.0, 0.90, 0.90)  # vermelho claro
-                else:
-                    bg_color = None
-        else:
-            # Perguntas do tipo texto – aqui, aplicamos uma lógica especial para "Nome do encarregado:".
-            text = f"<b>{question}</b> {answer}"
-            resposta = answer.strip().lower()
-            if question.strip().lower().startswith("nome do encarregado"):
-                if resposta:
-                    bg_color = (0.90, 1.0, 0.90)  # verde, se houver texto
-                else:
-                    bg_color = (1.0, 0.90, 0.90)  # vermelho, se vazio
-            else:
-                bg_color = None
+        q_norm = question.strip().lower()
+        invert = (q_norm in inverted_questions)
 
+        # monta o texto principal e captura resposta e justificativa
+        if isinstance(answer, dict):
+            resp_raw = answer.get("resposta", "")
+            resp_text = resp_raw.strip().lower()
+            text = f"<b>{question}</b><br/>Resposta: {resp_raw}"
+            justificativa = answer.get("justificativa", "").strip()
+            if justificativa:
+                justificativa_fmt = justificativa.replace("\n", "<br/>")
+                text += f"<br/><u>Justificativa:</u><br/>{justificativa_fmt}"
+        else:
+            resp_text = str(answer).strip().lower()
+            text = f"<b>{question}</b> {answer}"
+
+        # aplica a cor, invertendo se necessário
+        if resp_text == "sim":
+            bg_color = (1.0, 0.90, 0.90) if invert else (0.90, 1.0, 0.90)
+        elif resp_text in ["não", "nao"]:
+            bg_color = (0.90, 1.0, 0.90) if invert else (1.0, 0.90, 0.90)
+        else:
+            bg_color = None
+
+        # cria e posiciona o parágrafo
         para = Paragraph(text, qa_style)
         w_para, h_para = para.wrap(available_width, current_y - bottom_margin)
-        
-        # Se não há espaço suficiente na página para o parágrafo, desenha o rodapé, finaliza a página e reinicia
+
+        # quebra de página, se necessário
         if current_y - h_para < bottom_margin:
             draw_footer(c, width, height, text_objects, current_page, total_pages)
             c.showPage()
             current_page += 1
+            # redesenha título na nova página
             c.setFont("Helvetica-Bold", 16)
             c.drawCentredString(width/2, height - 30*mm, "Questionário de Poda")
             current_y = height - 40*mm
             w_para, h_para = para.wrap(available_width, current_y - bottom_margin)
-        
-        if bg_color is not None:
+
+        # pinta o fundo
+        if bg_color:
             c.saveState()
             c.setFillColorRGB(*bg_color)
             c.rect(margin, current_y - h_para, available_width, h_para, fill=1, stroke=0)
             c.restoreState()
-        
+
+        # desenha o texto
         para.drawOn(c, margin, current_y - h_para)
         current_y -= (h_para + spacing)
-    
-    # Desenha o rodapé na última página da seção do questionário e finaliza a página
+
+    # rodapé final da seção
     draw_footer(c, width, height, text_objects, current_page, total_pages)
     c.showPage()
-    current_page += 1
-    return current_page
+    return current_page + 1
 
 
 
 
 
-def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config, general_comments="", questionario_responses=None):
+def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, config, general_comments="", questionario_responses=None, questionario_config=None):
     """
     Cria o arquivo PDF utilizando os dados fornecidos.
     
@@ -690,7 +679,7 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
     def aggregate_data(data_list):
         """
         Agrupa os dados por área e sigla, contando as ocorrências de cada status.
-        Aplica a regra: se houver qualquer 'Parcial' para uma mesma quadra, o estado final é 'Parcial'.
+        Aplica a regra: se houver qualquer 'Parcial' para uma mesma área, o estado final é 'Parcial'.
         Caso contrário, escolhe o estado que aparece com maior frequência.
         """
         aggregated = {}
@@ -709,9 +698,25 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
                 final_state = max(status_counts.items(), key=lambda x: x[1])[0]
             result.append([area, sigla, final_state])
 
-        # ordena pelo número da quadra (se possível) ou alfabeticamente
-        result.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+        # Função de chave para ordenação que trata áreas tanto numéricas quanto strings
+        def sort_key(item):
+            area = item[0]
+            try:
+                # converte para string antes de chamar isdigit
+                if str(area).isdigit():
+                    return int(area)
+            except Exception as e:
+                # informa exatamente qual item quebrou
+                print(f"Erro ao ordenar o item {item!r}: área = {area!r} (tipo={type(area)}) → {e}")
+                raise
+            # se não for dígito, cai aqui e ordena lexicograficamente
+            return area
+
+        # ordena pelo número da área (quando possível) ou alfabeticamente
+        result.sort(key=sort_key)
+
         return result
+
 
 
     aggregated_quadra_data = aggregate_data(quadra_data)
@@ -1005,7 +1010,11 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
         c.setFont("Helvetica-Bold", 16)
         c.drawCentredString(width/2, height - 30 * mm, "Questionário de Poda")
         # Optionally adjust available vertical space or add spacing before responses
-        current_page = draw_questionario_section(c, width, height, questionario_responses, text_objects, current_page, total_pages)
+        if questionario_responses:
+            current_page = draw_questionario_section(
+                c, width, height, questionario_responses, text_objects,
+                current_page, total_pages
+    )
         # When draw_questionario_section finishes, it already drew the footer on its last page.
 
 
@@ -1102,8 +1111,8 @@ def create_pdf(entries, pdf_path, text_objects, report_date, reference_number, c
 
 
 def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include_last_page=False,
-                          disable_states=False, general_comments="", questionario_respostas=None, 
-                          disable_comments_table=False):
+                       disable_states=False, general_comments="", questionario_respostas=None, 
+                       disable_comments_table=False, questionario_config=None):
     settings = Settings()
     config = settings.config
     if not contract_number:
@@ -1129,6 +1138,7 @@ def convert_data_to_pdf(report_date, contract_number, entries, pdf_path, include
     text_objects['general_comments'] = general_comments if len(general_comments.strip()) > 10 else ""
     
     # Passe as respostas do questionário para que sejam usadas na criação do PDF
-    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config, general_comments, questionario_respostas)
+    create_pdf(entries, pdf_path, text_objects, report_date, contract_number, config,
+               general_comments, questionario_respostas, questionario_config)
 
 

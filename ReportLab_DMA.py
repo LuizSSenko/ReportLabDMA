@@ -44,6 +44,7 @@ from utils import (
 from req_classes.pdf_tools import convert_data_to_pdf
 from req_classes.configEditor import ConfigEditorDialog
 from req_classes.questionario_poda import QuestionarioPodaDialog
+from req_classes.PintaQuadra import MapColoringApp
 
 # =============================================================================
 # Configuração do logger para este módulo
@@ -559,6 +560,11 @@ class PageImageList(QWizardPage):
         self.questionario_poda_button.clicked.connect(self.open_questionario_poda)
         header_container.addWidget(self.questionario_poda_button)
 
+        # botão “Pinta Quadra”
+        self.pinta_quadra_button = QPushButton("Pinta Quadra")
+        self.pinta_quadra_button.clicked.connect(self.open_pinta_quadra)
+        header_container.addWidget(self.pinta_quadra_button)
+
         date_layout = QHBoxLayout()
         date_label = QLabel("Data do Relatório:")
         # Preenche o campo com a data atual
@@ -702,6 +708,19 @@ class PageImageList(QWizardPage):
         else:
             # Se o usuário cancelar, opcionalmente não atualiza o valor
             pass
+    
+    def open_pinta_quadra(self) -> None:
+        """
+        Abre a janela do PintaQuadra usando a mesma pasta de imagens para salvar o JSON.
+        """
+        # obtém a pasta que o usuário escolheu na primeira página
+        dir_text = self.wizard().page(WizardPage.SelectDirectoryPage).line_edit.text().strip()
+        save_dir = Path(dir_text)
+
+        # instancia passando o save_dir
+        self.map_coloring_win = MapColoringApp(save_dir=save_dir)
+        self.map_coloring_win.show()
+
 
     def get_report_date(self) -> str:
         """

@@ -1,3 +1,4 @@
+#questionario_poda.py
 import json, os
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QRadioButton, QButtonGroup, QDialogButtonBox,

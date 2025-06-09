@@ -40,5 +40,8 @@
 
 -22/04/2025 - New Features:
 	- Questionário menu and Questionário page.
-	- New logic: If a picture in the same Quadra / Canteiro is Parcial, the state in the table will be Parcial for the whole area. 
-	- 
+	- New logic: If a picture in the same Quadra / Canteiro is Parcial, the state in the table will be Parcial for the whole area.
+
+-09/06/2025 - New Features:
+	- PintaQuadra menu added (Paints the shapefile blocks with colours, like a dashboard, but printable).
+	- Saves the PintaQuadra values in the same directory as the pictures.
