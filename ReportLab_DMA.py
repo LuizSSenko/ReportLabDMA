@@ -12,6 +12,7 @@ import json
 import hashlib
 from io import BytesIO
 from typing import Optional, List, Dict
+import re
 
 # Importação dos componentes do PyQt5 para a criação da interface gráfica
 from PyQt5.QtWidgets import (
@@ -271,6 +272,7 @@ class ImageData:
         self.comment: str = ""                      # Comentário associado à imagem
         self.hash: Optional[str] = None             # Hash único (será calculado posteriormente)
         self.order: int = 9999                      # Ordem de exibição (valor alto por padrão)
+        self.location: str = ""                     # Localização extraída do nome do arquivo (ex: "canteiro 12", "quadra 5")
 
 
 # =============================================================================
@@ -573,16 +575,22 @@ class PageImageList(QWizardPage):
         date_layout.addWidget(self.report_date_line_edit)
         header_container.addLayout(date_layout)
         left_layout.addLayout(header_container)
+        # dispara ao terminar edição (enter ou perder foco)
+        self.report_date_line_edit.editingFinished.connect(self.save_database)
 
         # Layout com checkbox para desabilitar os estados e a tabela de comentários
         checkbox_layout = QHBoxLayout()
         self.checkbox_disable_states = QCheckBox("Desativar a função de estados")
         self.checkbox_disable_states.setChecked(False)
         self.checkbox_disable_states.toggled.connect(self.on_disable_states_toggled)
+        # grava no JSON toda vez que muda
+        self.checkbox_disable_states.toggled.connect(self.save_database)
         checkbox_layout.addWidget(self.checkbox_disable_states)
 
         self.checkbox_disable_comments = QCheckBox("Desativar tabela de comentários")
         self.checkbox_disable_comments.setChecked(False)
+        # grava no JSON toda vez que muda
+        self.checkbox_disable_comments.toggled.connect(self.save_database)
         checkbox_layout.addWidget(self.checkbox_disable_comments)
         left_layout.addLayout(checkbox_layout)
         
@@ -590,7 +598,7 @@ class PageImageList(QWizardPage):
         header_layout = QHBoxLayout()
         self.header_toggle_checkbox = QCheckBox()
         self.header_toggle_checkbox.setChecked(True)
-        self.header_toggle_checkbox.stateChanged.connect(self.toggle_all_items)
+        self.header_toggle_checkbox.stateChanged.connect(lambda state: (self.toggle_all_items(state), self.save_database()))
         header_layout.addWidget(self.header_toggle_checkbox, 0)
         header_layout.addWidget(QLabel("Incluir"), 1)
         header_layout.addWidget(QLabel("Nome da Imagem"), 3)
@@ -744,6 +752,7 @@ class PageImageList(QWizardPage):
                     rb.setGraphicsEffect(effect)
                 else:
                     rb.setGraphicsEffect(None)
+        self.save_database()
     
     def toggle_all_items(self, state: int) -> None:
         """
@@ -755,7 +764,15 @@ class PageImageList(QWizardPage):
             widget = self.list_widget.itemWidget(item)
             # Atualiza a checkbox de inclusão de cada item
             widget.chkInclude.setChecked(checked)
+        # salva a escolha “selecionar tudo” no JSON
+        self.save_database()
 
+    def parse_location(self, filename: str) -> str:
+        """
+        Retorna o nome do arquivo sem a extensão, para usar como 'location'.
+        """
+        return Path(filename).stem
+    
     def initializePage(self) -> None:
         """
         Inicializa a página:
@@ -821,6 +838,7 @@ class PageImageList(QWizardPage):
                     image_data.status = saved.get("status", "Não Iniciado")
                     image_data.include = saved.get("include", True)
                     image_data.order = saved.get("order", 9999)
+                    image_data.location = self.parse_location(image_data.filename)
                 else:
                     image_data.order = 9999
 
@@ -830,7 +848,13 @@ class PageImageList(QWizardPage):
             # Adiciona os itens na lista, configurando o estilo conforme a presença de comentário
             for image_data in results:
                 self.image_data_map[image_data.filename] = image_data
+                image_data.location = self.parse_location(image_data.filename)
                 widget = ImageStatusItemWidget(image_data)
+                # Conexões para salvar imediatamente ao mudar include/status
+                widget.chkInclude.stateChanged.connect(self.save_database)
+                widget.rbConcluido.toggled.connect(self.save_database)
+                widget.rbParcial.toggled.connect(self.save_database)
+                widget.rbNao.toggled.connect(self.save_database)
                 if image_data.comment.strip():
                     widget.lblName.setStyleSheet("background-color: lightgreen;")
                 else:
@@ -848,6 +872,11 @@ class PageImageList(QWizardPage):
         
             # Atualiza o estado visual dos botões de status conforme a configuração
             self.on_disable_states_toggled(disable_states)
+
+            # Agora salva imediatamente para garantir que
+            # campos como toggle_all_items, report_date e disable_comments_table
+            # sejam persistidos mesmo sem alteração do usuário.
+            self.save_database()
 
         worker.signals.result.connect(on_result)
         worker.signals.finished.connect(progress_dialog.close)
@@ -946,6 +975,7 @@ class PageImageList(QWizardPage):
                 image_data.status = saved.get("status", "Não Iniciado")
                 image_data.include = saved.get("include", True)
                 image_data.order = saved.get("order", 9999)
+                image_data.location = self.parse_location(image_data.filename)
             else:
                 image_data.order = 9999
 
@@ -970,6 +1000,7 @@ class PageImageList(QWizardPage):
                 widget.lblName.setStyleSheet("")
 
 
+    
     def save_database(self) -> None:
         """
         Salva os dados atuais das imagens (comentários, status, inclusão, ordem) em um arquivo JSON.
@@ -982,6 +1013,8 @@ class PageImageList(QWizardPage):
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
             widget = self.list_widget.itemWidget(item)
+            if widget is None:
+                continue
             widget.image_data.order = index + 1
 
         images_db = {}
@@ -991,7 +1024,8 @@ class PageImageList(QWizardPage):
                     "comment": image_data.comment,
                     "status": image_data.status,
                     "include": image_data.include,
-                    "order": image_data.order
+                    "order": image_data.order,
+                    "location":  image_data.location
                 }
         
         # Estrutura completa a ser salva no JSON
@@ -1109,6 +1143,7 @@ class PageImageList(QWizardPage):
         Retorna o estado (True/False) do checkbox que desativa os estados.
         """
         return self.checkbox_disable_states.isChecked()
+
 
 # =============================================================================
 # Diálogo para Comentários Gerais

@@ -80,14 +80,6 @@
         "color_inverted": false
     },
     {
-        "text": "Triturador de galhos presente? (Item 12.11 do contrato)",
-        "type": "radio",
-        "requires_justification": true,
-        "justify_on": "Não",
-        "default": "Sim",
-        "color_inverted": false
-    },
-    {
         "text": "A área ficou limpa após a execução do serviço?",
         "type": "radio",
         "requires_justification": true,
