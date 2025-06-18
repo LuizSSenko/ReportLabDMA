@@ -39,7 +39,7 @@ Principais objetivos:
 - Pré-visualização em tempo real das alterações antes de salvar.
 
 ### 4. Macros de Comentários
-- Criação e gerenciamento de atalhos de texto (ex.: digitar `#não-conformidade` insere texto-padrão).  
+- Criação e gerenciamento de atalhos de texto (ex.: clicar no nome da imagem + digitar número = Texto salvo em req_classes/macros.json).  
 - Acelera a digitação de observações repetitivas.
 
 ### 5. PintaQuadra
