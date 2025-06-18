@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import hashlib
+from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
 from typing import Tuple, Optional, List, Dict, Any
@@ -42,7 +43,7 @@ if not logger.hasHandlers():
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
 
-
+@lru_cache(maxsize=1)
 def load_config() -> dict:
     """
     Carrega as configurações do sistema através da classe Settings.
@@ -174,18 +175,12 @@ def sanitize_sigla(sigla: str) -> str:
         sigla = sigla.replace(c, '-')
     return sigla
 
+@lru_cache(maxsize=1)
 def load_geojson() -> Dict[str, Any]:
-    """
-    Carrega o arquivo GeoJSON que contém as informações de quadras e áreas.
-
-    Retorna:
-        Dict[str, Any]: Dados carregados do arquivo GeoJSON.
-
-    Em caso de erro, registra uma mensagem crítica e lança a exceção.
-    """
+    """Carrega e mantém em cache o arquivo GeoJSON usado pela aplicação."""
     geojson_path = Path(__file__).parent / "map.geojson"
     try:
-        with geojson_path.open('r', encoding='utf-8') as file:
+        with geojson_path.open("r", encoding="utf-8") as file:
             data = json.load(file)
         return data
     except Exception as e:
