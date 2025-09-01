@@ -302,7 +302,7 @@ class ImageStatusItemWidget(QWidget):
     Contém:
       - Checkbox para indicar se a imagem deve ser incluída.
       - Rótulo clicável exibindo o nome da imagem.
-      - Botões de rádio para definir o status: "Concluído", "Parcial" ou "Não Iniciado".
+      - Botões de rádio para definir o status: "Completo", "Básico", "Parcial" ou "Não Iniciado".
     """
     def __init__(self, image_data: ImageData, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -324,13 +324,16 @@ class ImageStatusItemWidget(QWidget):
         layout.addWidget(self.lblName, 3)
 
         # Cria os botões de rádio para seleção do status
-        self.rbConcluido = QRadioButton("Concluído")
+        self.rbCompleto = QRadioButton("Completo")
+        self.rbBasico = QRadioButton("Básico")
         self.rbParcial = QRadioButton("Parcial")
         self.rbNao = QRadioButton("Não Iniciado")
 
         # Define o botão de rádio padrão conforme o status armazenado
-        if self.image_data.status == "Concluído":
-            self.rbConcluido.setChecked(True)
+        if self.image_data.status == "Completo":
+            self.rbCompleto.setChecked(True)
+        elif self.image_data.status == "Básico":
+            self.rbBasico.setChecked(True)
         elif self.image_data.status == "Parcial":
             self.rbParcial.setChecked(True)
         else:
@@ -338,17 +341,20 @@ class ImageStatusItemWidget(QWidget):
 
         # Agrupa os botões de rádio para que apenas um seja selecionado por vez
         self.btnGroup = QButtonGroup(self)
-        self.btnGroup.addButton(self.rbConcluido)
+        self.btnGroup.addButton(self.rbCompleto)
+        self.btnGroup.addButton(self.rbBasico)
         self.btnGroup.addButton(self.rbParcial)
         self.btnGroup.addButton(self.rbNao)
 
-        layout.addWidget(self.rbConcluido, 1)
+        layout.addWidget(self.rbCompleto, 1)
+        layout.addWidget(self.rbBasico, 1)
         layout.addWidget(self.rbParcial, 1)
         layout.addWidget(self.rbNao, 1)
 
         # Conecta os sinais dos botões para atualizar os dados em ImageData
         self.chkInclude.stateChanged.connect(self.onIncludeChanged)
-        self.rbConcluido.toggled.connect(functools.partial(self.onStatusChanged, status="Concluído"))
+        self.rbCompleto.toggled.connect(functools.partial(self.onStatusChanged, status="Completo"))
+        self.rbBasico.toggled.connect(functools.partial(self.onStatusChanged, status="Básico"))
         self.rbParcial.toggled.connect(functools.partial(self.onStatusChanged, status="Parcial"))
         self.rbNao.toggled.connect(functools.partial(self.onStatusChanged, status="Não Iniciado"))
 
@@ -600,11 +606,27 @@ class PageImageList(QWizardPage):
         self.header_toggle_checkbox.setChecked(True)
         self.header_toggle_checkbox.stateChanged.connect(lambda state: (self.toggle_all_items(state), self.save_database()))
         header_layout.addWidget(self.header_toggle_checkbox, 0)
-        header_layout.addWidget(QLabel("Incluir"), 1)
+        
+        # Label para nome da imagem com o mesmo stretch factor que lblName nos itens
         header_layout.addWidget(QLabel("Nome da Imagem"), 3)
-        header_layout.addWidget(QLabel("Concluído"), 1)
-        header_layout.addWidget(QLabel("Parcial"), 1)
-        header_layout.addWidget(QLabel("Não Iniciado"), 1)
+        
+        # Checkboxes para aplicar estados em lote com alinhamento perfeito
+        self.header_completo_checkbox = QCheckBox("Completo")
+        self.header_basico_checkbox = QCheckBox("Básico")
+        self.header_parcial_checkbox = QCheckBox("Parcial")
+        self.header_nao_checkbox = QCheckBox("Não Iniciado")
+        
+        # Conecta os checkboxes de estado aos métodos de aplicação em lote
+        self.header_completo_checkbox.stateChanged.connect(lambda state: self.apply_status_to_all("Completo", state))
+        self.header_basico_checkbox.stateChanged.connect(lambda state: self.apply_status_to_all("Básico", state))
+        self.header_parcial_checkbox.stateChanged.connect(lambda state: self.apply_status_to_all("Parcial", state))
+        self.header_nao_checkbox.stateChanged.connect(lambda state: self.apply_status_to_all("Não Iniciado", state))
+        
+        # Adiciona os checkboxes com o mesmo stretch factor que os radio buttons nos itens
+        header_layout.addWidget(self.header_completo_checkbox, 1)
+        header_layout.addWidget(self.header_basico_checkbox, 1)
+        header_layout.addWidget(self.header_parcial_checkbox, 1)
+        header_layout.addWidget(self.header_nao_checkbox, 1)
         left_layout.addLayout(header_layout)
         
         # Cria o QListWidget para exibir a lista de imagens
@@ -741,10 +763,21 @@ class PageImageList(QWizardPage):
         Desabilita ou habilita os botões de rádio de status para cada item, conforme o estado do checkbox.
         Aplica também um efeito visual de opacidade quando desabilitado.
         """
+        # Desabilita/habilita os checkboxes do cabeçalho
+        for header_checkbox in [self.header_completo_checkbox, self.header_basico_checkbox, self.header_parcial_checkbox, self.header_nao_checkbox]:
+            header_checkbox.setEnabled(not checked)
+            if checked:
+                effect = QGraphicsOpacityEffect(header_checkbox)
+                effect.setOpacity(0.5)
+                header_checkbox.setGraphicsEffect(effect)
+            else:
+                header_checkbox.setGraphicsEffect(None)
+        
+        # Desabilita/habilita os radio buttons de cada item
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             widget = self.list_widget.itemWidget(item)
-            for rb in [widget.rbConcluido, widget.rbParcial, widget.rbNao]:
+            for rb in [widget.rbCompleto, widget.rbBasico, widget.rbParcial, widget.rbNao]:
                 rb.setEnabled(not checked)
                 if checked:
                     effect = QGraphicsOpacityEffect(rb)
@@ -766,6 +799,61 @@ class PageImageList(QWizardPage):
             widget.chkInclude.setChecked(checked)
         # salva a escolha “selecionar tudo” no JSON
         self.save_database()
+
+    def apply_status_to_all(self, status: str, state: int) -> None:
+        """
+        Aplica o status selecionado a todas as imagens quando o checkbox correspondente é marcado.
+        Se o checkbox for desmarcado, não altera o status das imagens.
+        """
+        if state == Qt.Checked:
+            # Primeiro, desmarca os outros checkboxes de estado para evitar conflitos
+            if status != "Completo":
+                self.header_completo_checkbox.blockSignals(True)
+                self.header_completo_checkbox.setChecked(False)
+                self.header_completo_checkbox.blockSignals(False)
+            if status != "Básico":
+                self.header_basico_checkbox.blockSignals(True)
+                self.header_basico_checkbox.setChecked(False)
+                self.header_basico_checkbox.blockSignals(False)
+            if status != "Parcial":
+                self.header_parcial_checkbox.blockSignals(True)
+                self.header_parcial_checkbox.setChecked(False)
+                self.header_parcial_checkbox.blockSignals(False)
+            if status != "Não Iniciado":
+                self.header_nao_checkbox.blockSignals(True)
+                self.header_nao_checkbox.setChecked(False)
+                self.header_nao_checkbox.blockSignals(False)
+            
+            # Aplica o status selecionado a todas as imagens
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                widget = self.list_widget.itemWidget(item)
+                
+                # Atualiza o status na estrutura de dados
+                widget.image_data.status = status
+                
+                # Atualiza os radio buttons na interface
+                widget.rbCompleto.blockSignals(True)
+                widget.rbBasico.blockSignals(True)
+                widget.rbParcial.blockSignals(True)
+                widget.rbNao.blockSignals(True)
+                
+                if status == "Completo":
+                    widget.rbCompleto.setChecked(True)
+                elif status == "Básico":
+                    widget.rbBasico.setChecked(True)
+                elif status == "Parcial":
+                    widget.rbParcial.setChecked(True)
+                else:  # "Não Iniciado"
+                    widget.rbNao.setChecked(True)
+                
+                widget.rbCompleto.blockSignals(False)
+                widget.rbBasico.blockSignals(False)
+                widget.rbParcial.blockSignals(False)
+                widget.rbNao.blockSignals(False)
+            
+            # Salva as alterações no banco de dados
+            self.save_database()
 
     def parse_location(self, filename: str) -> str:
         """
@@ -835,7 +923,22 @@ class PageImageList(QWizardPage):
                 if image_data.hash and image_data.hash in images_db:
                     saved = images_db[image_data.hash]
                     image_data.comment = saved.get("comment", "")
-                    image_data.status = saved.get("status", "Não Iniciado")
+                    # Migração de status antigos para novos
+                    saved_status = saved.get("status", "Não Iniciado")
+                    if saved_status == "Concluído":
+                        image_data.status = "Completo"
+                    elif saved_status == "Básico":
+                        image_data.status = "Básico"
+                    elif saved_status == "Parcial":
+                        image_data.status = "Parcial"
+                    elif saved_status == "Não Iniciado":
+                        image_data.status = "Não Iniciado"
+                    else:
+                        # Se for um status novo válido, usa ele
+                        if saved_status in ["Completo", "Básico", "Parcial", "Não Iniciado"]:
+                            image_data.status = saved_status
+                        else:
+                            image_data.status = "Não Iniciado"
                     image_data.include = saved.get("include", True)
                     image_data.order = saved.get("order", 9999)
                     image_data.location = self.parse_location(image_data.filename)
@@ -852,7 +955,8 @@ class PageImageList(QWizardPage):
                 widget = ImageStatusItemWidget(image_data)
                 # Conexões para salvar imediatamente ao mudar include/status
                 widget.chkInclude.stateChanged.connect(self.save_database)
-                widget.rbConcluido.toggled.connect(self.save_database)
+                widget.rbCompleto.toggled.connect(self.save_database)
+                widget.rbBasico.toggled.connect(self.save_database)
                 widget.rbParcial.toggled.connect(self.save_database)
                 widget.rbNao.toggled.connect(self.save_database)
                 if image_data.comment.strip():
@@ -972,7 +1076,22 @@ class PageImageList(QWizardPage):
             if image_data.hash and image_data.hash in images_db:
                 saved = images_db[image_data.hash]
                 image_data.comment = saved.get("comment", "")
-                image_data.status = saved.get("status", "Não Iniciado")
+                # Migração de status antigos para novos
+                saved_status = saved.get("status", "Não Iniciado")
+                if saved_status == "Concluído":
+                    image_data.status = "Completo"
+                elif saved_status == "Básico":
+                    image_data.status = "Básico"
+                elif saved_status == "Parcial":
+                    image_data.status = "Parcial"
+                elif saved_status == "Não Iniciado":
+                    image_data.status = "Não Iniciado"
+                else:
+                    # Se for um status novo válido, usa ele
+                    if saved_status in ["Completo", "Básico", "Parcial", "Não Iniciado"]:
+                        image_data.status = saved_status
+                    else:
+                        image_data.status = "Não Iniciado"
                 image_data.include = saved.get("include", True)
                 image_data.order = saved.get("order", 9999)
                 image_data.location = self.parse_location(image_data.filename)
@@ -985,8 +1104,10 @@ class PageImageList(QWizardPage):
             widget = self.list_widget.itemWidget(item)
             image_data = widget.image_data
 
-            if image_data.status == "Concluído":
-                widget.rbConcluido.setChecked(True)
+            if image_data.status == "Completo":
+                widget.rbCompleto.setChecked(True)
+            elif image_data.status == "Básico":
+                widget.rbBasico.setChecked(True)
             elif image_data.status == "Parcial":
                 widget.rbParcial.setChecked(True)
             else:

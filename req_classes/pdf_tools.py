@@ -35,7 +35,8 @@ logging.basicConfig(
 
 # Mapeamento de cores para os estados (utilizado para pintar as células de acordo com o status)
 STATUS_COLORS = {
-    "Concluído": (0.90, 1.0, 0.90),      # verde claro
+    "Completo": (0.90, 1.0, 0.90),       # verde claro
+    "Básico": (0.85, 0.90, 1.0),         # azul claro
     "Parcial": (1.0, 1.0, 0.85),         # amarelo claro
     "Não Iniciado": (1.0, 0.90, 0.90)    # vermelho claro
 }
